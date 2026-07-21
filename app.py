@@ -14,9 +14,9 @@ st.set_page_config(page_title="LaunchCast NFL", page_icon="🏈", layout="wide")
 CURRENT_YEAR = datetime.now().year
 CURRENT_MONTH = datetime.now().month
 
-# NFL season runs Sept-Dec. If we're in Jan-Aug, use 2025 data for testing.
+# NFL season runs Sept-Dec. During offseason, use 2024 data (2025 not available yet)
 if CURRENT_MONTH < 9:
-    DISPLAY_YEAR = 2025  # Force 2025 data during offseason
+    DISPLAY_YEAR = 2024  # Use 2024 data (2025 not yet available)
     DEFAULT_WEEK = 10    # Default to mid-season week for testing
     IS_OFFSEASON = True
 else:
@@ -28,7 +28,7 @@ else:
 st.sidebar.title("LaunchCast NFL 🏈")
 
 if IS_OFFSEASON:
-    st.sidebar.warning("⚠️ **NFL Offseason**\n\nShowing 2025 season data for testing. Live projections begin September 2026.")
+    st.sidebar.warning("⚠️ **NFL Offseason**\n\nShowing 2024 season data for testing. Live projections begin September 2026.")
 
 week_selector = st.sidebar.number_input(
     "Select Week", 
@@ -73,7 +73,7 @@ projections, error = load_and_score_data(week_selector, DISPLAY_YEAR)
 if error:
     st.error(error)
     if IS_OFFSEASON:
-        st.info(" **Tip:** This is expected during the offseason. The app is configured to show 2025 season data for testing.")
+        st.info("💡 **Tip:** This is expected during the offseason. The app is configured to show 2024 season data for testing.")
 elif projections is not None and not projections.empty:
     # Render the UI
     render_nfl_dashboard(
