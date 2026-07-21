@@ -1,5 +1,6 @@
 # app.py
 # LaunchCast NFL — Main Entry Point
+# Handles both in-season and offseason gracefully
 
 import streamlit as st
 from datetime import datetime
@@ -8,7 +9,7 @@ from core.scoring import generate_nfl_projections
 from ui.render import render_nfl_dashboard
 
 # App Config
-st.set_page_config(page_title="LaunchCast NFL", page_icon="", layout="wide")
+st.set_page_config(page_title="LaunchCast NFL", page_icon="🏈", layout="wide")
 
 # Determine current season dynamically
 CURRENT_YEAR = datetime.now().year
@@ -25,7 +26,7 @@ else:
     IS_OFFSEASON = False
 
 # Sidebar
-st.sidebar.title("LaunchCast NFL ")
+st.sidebar.title("LaunchCast NFL 🏈")
 
 if IS_OFFSEASON:
     st.sidebar.warning("⚠️ **NFL Offseason**\n\nShowing 2025 season data for testing. Live projections begin September 2026.")
