@@ -193,7 +193,7 @@ def get_weekly_player_stats(week: int, year: int = None) -> pd.DataFrame:
     return pd.DataFrame()
 
 def get_team_defensive_stats(year: int = None) -> pd.DataFrame:
-    """Fetch team defensive stats using the correct team stats function."""
+    """Fetch team defensive stats using import_seasonal_data with s_type."""
     if year is None:
         year = PREFERRED_SEASON
     
@@ -201,13 +201,17 @@ def get_team_defensive_stats(year: int = None) -> pd.DataFrame:
         import nfl_data_py as nfl
         st.info(f"🛡️ Fetching {year} team defensive stats...")
         
-        # FIX: Use import_team_stats (for team data) instead of import_seasonal_data (for player data)
-        if hasattr(nfl, 'import_team_stats'):
-            def_stats = nfl.import_team_stats([year], stat_type='def')
-        else:
-            st.warning("⚠️ import_team_stats not available in this nfl_data_py version.")
-            return pd.DataFrame()
-            
+        # FIX: Use import_seasonal_data with s_type='def' (older API)
+        # If that fails, try stat_type='def' (newer API)
+        def_stats = pd.DataFrame()
+        try:
+            def_stats = nfl.import_seasonal_data([year], s_type='def')
+        except TypeError:
+            try:
+                def_stats = nfl.import_seasonal_data([year], stat_type='def')
+            except Exception:
+                pass
+                
         if not def_stats.empty:
             # Return available columns
             available_cols = ['team', 'week', 'season']
@@ -221,7 +225,7 @@ def get_team_defensive_stats(year: int = None) -> pd.DataFrame:
             st.success(f"✅ Loaded defensive stats for {len(def_stats)} team-weeks")
             return def_stats[available_cols]
     except Exception as e:
-        st.warning(f"️ Defensive stats fetch failed: {str(e)[:100]}")
+        st.warning(f"⚠️ Defensive stats fetch failed: {str(e)[:100]}")
     
     return pd.DataFrame()
 
@@ -236,7 +240,7 @@ def build_matchup_matrix(week: int, year: int = None) -> pd.DataFrame:
     def_stats = get_team_defensive_stats(year)
     
     if def_stats.empty:
-        st.warning("⚠️ No defensive stats available - proceeding without matchup adjustments")
+        st.warning("️ No defensive stats available - proceeding without matchup adjustments")
         return players
     
     # Merge offense with defense
