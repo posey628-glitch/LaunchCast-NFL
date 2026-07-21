@@ -10,11 +10,11 @@ from datetime import datetime
 CURRENT_YEAR = datetime.now().year
 CURRENT_MONTH = datetime.now().month
 
-# During offseason (Jan-Aug), use 2024 (2025 not available yet)
+# During offseason (Jan-Aug), use previous year (2025 for July 2026)
 # During season (Sept-Dec), use current year
 if CURRENT_MONTH < 9:
-    PREFERRED_SEASON = 2024
-    FALLBACK_SEASON = 2023
+    PREFERRED_SEASON = CURRENT_YEAR - 1
+    FALLBACK_SEASON = CURRENT_YEAR - 2
 else:
     PREFERRED_SEASON = CURRENT_YEAR
     FALLBACK_SEASON = CURRENT_YEAR - 1
