@@ -193,19 +193,19 @@ def get_weekly_player_stats(week: int, year: int = None) -> pd.DataFrame:
     return pd.DataFrame()
 
 def get_team_defensive_stats(year: int = None) -> pd.DataFrame:
-    """Fetch team defensive stats using import_team_stats with stat_type='def'."""
+    """Fetch team defensive stats using import_seasonal_data."""
     if year is None:
         year = PREFERRED_SEASON
     
     try:
         import nfl_data_py as nfl
-        st.info(f"️ Fetching {year} team defensive stats...")
-        # FIX: use import_team_stats with stat_type='def' (not import_seasonal_data)
-        def_stats = nfl.import_team_stats(year, stat_type='def')
+        st.info(f"🛡️ Fetching {year} team defensive stats...")
+        # FIX: use import_seasonal_data with stat_type='def'
+        def_stats = nfl.import_seasonal_data(year, stat_type='def')
         
         if not def_stats.empty:
             # Return available columns
-            available_cols = ['team', 'week', 'season']
+            available_cols = ['team', 'season']
             optional_cols = ['pass_epa', 'rush_epa', 'pressure_rate', 'stuff_rate',
                            'pass_success_rate', 'rush_success_rate', 'blitz_rate']
             
@@ -213,7 +213,7 @@ def get_team_defensive_stats(year: int = None) -> pd.DataFrame:
                 if col in def_stats.columns:
                     available_cols.append(col)
             
-            st.success(f"✅ Loaded defensive stats for {len(def_stats)} team-weeks")
+            st.success(f"✅ Loaded defensive stats for {len(def_stats)} teams")
             return def_stats[available_cols]
     except Exception as e:
         st.warning(f"⚠️ Defensive stats fetch failed: {str(e)[:100]}")
@@ -231,12 +231,10 @@ def build_matchup_matrix(week: int, year: int = None) -> pd.DataFrame:
     def_stats = get_team_defensive_stats(year)
     
     if def_stats.empty:
-        st.warning("⚠️ No defensive stats available - proceeding with neutral matchups")
+        st.warning("⚠️ No defensive stats available - proceeding without matchup adjustments")
         return players
     
     # Merge offense with defense
-    latest_def = def_stats.sort_values('week').groupby('team').last().reset_index()
-    
     def_cols = {
         'pass_epa': 'opp_pass_epa_allowed',
         'rush_epa': 'opp_rush_epa_allowed',
@@ -244,11 +242,11 @@ def build_matchup_matrix(week: int, year: int = None) -> pd.DataFrame:
         'stuff_rate': 'opp_stuff_rate'
     }
     
-    valid_cols = {k: v for k, v in def_cols.items() if k in latest_def.columns}
-    latest_def = latest_def.rename(columns=valid_cols)
+    valid_cols = {k: v for k, v in def_cols.items() if k in def_stats.columns}
+    latest_def = def_stats.rename(columns=valid_cols)
     
     matchup_df = players.merge(
-        latest_def[['team'] + list(valid_cols.keys())],
+        latest_def[['team'] + list(valid_cols.values())],
         left_on='opponent_team',
         right_on='team',
         how='left',
