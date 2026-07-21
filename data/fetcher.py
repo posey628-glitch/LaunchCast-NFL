@@ -7,7 +7,8 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 
-CURRENT_SEASON = datetime.now().year
+# Force 2025 for testing during offseason
+CURRENT_SEASON = 2025  # Changed from datetime.now().year
 
 # ============================================================================
 # 1. PLAYER OFFENSE (The "Hitter" Data)
