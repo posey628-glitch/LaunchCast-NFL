@@ -1,5 +1,5 @@
 # core/scoring.py
-# LaunchCast NFL — The Scoring Engine
+# LaunchCast NFL — The Scoring Engine (Fixed for dynamic columns)
 
 import pandas as pd
 import numpy as np
