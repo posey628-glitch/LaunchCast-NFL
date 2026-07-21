@@ -1,17 +1,15 @@
 # data/fetcher.py
 # LaunchCast NFL — Data Fetcher (nflverse via nfl_data_py)
-# Pulls weekly player stats AND team defensive matchups.
 
 import nfl_data_py as nfl
 import pandas as pd
 import numpy as np
-from datetime import datetime
 
-# Force 2025 for testing during offseason
-CURRENT_SEASON = 2025  # Changed from datetime.now().year
+# FORCE 2025 DATA FOR OFFSEASON TESTING
+CURRENT_SEASON = 2025
 
 # ============================================================================
-# 1. PLAYER OFFENSE (The "Hitter" Data)
+# 1. PLAYER OFFENSE
 # ============================================================================
 def get_weekly_player_stats(week: int, year: int = CURRENT_SEASON) -> pd.DataFrame:
     """Pulls weekly player stats (Targets, Routes, Air Yards, etc.)."""
@@ -35,32 +33,22 @@ def get_weekly_player_stats(week: int, year: int = CURRENT_SEASON) -> pd.DataFra
         return pd.DataFrame()
 
 # ============================================================================
-# 2. TEAM DEFENSE (The "Pitcher" Data)
+# 2. TEAM DEFENSE
 # ============================================================================
 def get_team_defensive_stats(year: int = CURRENT_SEASON) -> pd.DataFrame:
-    """
-    Pulls season-long team defensive stats. 
-    This is the 'Pitcher Season Stats' equivalent.
-    Includes EPA/play allowed, Success Rate allowed, and Pressure Rate.
-    """
+    """Pulls season-long team defensive stats."""
     try:
-        # import_team_stats returns both offensive and defensive rows
         team_stats = nfl.import_team_stats([year])
-        
-        # Filter to only defensive rows
         def_stats = team_stats[team_stats['side'] == 'def'].copy()
         
-        # We only need the most predictive columns for our model
         cols_to_keep = [
             'team', 'week', 'season', 
-            'pass_epa', 'rush_epa', 'total_epa', # EPA allowed (lower is better for defense)
+            'pass_epa', 'rush_epa', 'total_epa',
             'pass_success_rate', 'rush_success_rate',
             'pressure_rate', 'blitz_rate',
-            'defensive_line_yards', # Yards allowed at the line of scrimmage
-            'stuff_rate' # % of runs stopped at or behind the line
+            'defensive_line_yards', 'stuff_rate'
         ]
         
-        # Keep only columns that exist (nflverse updates column names occasionally)
         existing_cols = [c for c in cols_to_keep if c in def_stats.columns]
         return def_stats[existing_cols]
         
@@ -69,30 +57,20 @@ def get_team_defensive_stats(year: int = CURRENT_SEASON) -> pd.DataFrame:
         return pd.DataFrame()
 
 # ============================================================================
-# 3. THE MATCHUP MATRIX (Merging Offense vs Defense)
+# 3. THE MATCHUP MATRIX
 # ============================================================================
 def build_matchup_matrix(week: int, year: int = CURRENT_SEASON) -> pd.DataFrame:
-    """
-    The Core Engine: Merges Player Offense with Opponent Defense.
-    Returns a dataframe where every row is a Player, enriched with the 
-    specific defensive stats of the team they are facing that week.
-    """
-    # 1. Get Player Data
+    """Merges Player Offense with Opponent Defense."""
     players = get_weekly_player_stats(week, year)
     if players.empty:
         return pd.DataFrame()
         
-    # 2. Get Defensive Data (We use the season-long average for the opponent)
-    # In NFL, season-long defense is more stable than weekly defense.
     def_stats = get_team_defensive_stats(year)
     if def_stats.empty:
-        return players # Return players without defensive context if def fails
+        return players
         
-    # Get the LATEST defensive stats for each team (most predictive)
     latest_def = def_stats.sort_values('week').groupby('team').last().reset_index()
     
-    # 3. Merge: Player's 'opponent_team' matches Defense's 'team'
-    # We rename defensive columns to avoid collision with player columns
     def_cols_to_merge = {
         'pass_epa': 'opp_pass_epa_allowed',
         'rush_epa': 'opp_rush_epa_allowed',
@@ -100,13 +78,9 @@ def build_matchup_matrix(week: int, year: int = CURRENT_SEASON) -> pd.DataFrame:
         'stuff_rate': 'opp_stuff_rate'
     }
     
-    # Only merge columns that actually exist in our defensive dataframe
     valid_def_cols = {k: v for k, v in def_cols_to_merge.items() if k in latest_def.columns}
     latest_def = latest_def.rename(columns=valid_def_cols)
     
-    merge_cols = ['team'] + list(valid_def_cols.values())
-    
-    # The Merge
     matchup_df = players.merge(
         latest_def[['team'] + list(valid_def_cols.keys())], 
         left_on='opponent_team', 
@@ -115,7 +89,6 @@ def build_matchup_matrix(week: int, year: int = CURRENT_SEASON) -> pd.DataFrame:
         suffixes=('', '_opp')
     )
     
-    # Cleanup: drop the duplicate 'team_opp' column created by the merge
     if 'team_opp' in matchup_df.columns:
         matchup_df = matchup_df.drop(columns=['team_opp'])
         
