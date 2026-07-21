@@ -1,37 +1,79 @@
 # app.py
 # LaunchCast NFL — Main Entry Point
+# Handles both in-season and offseason gracefully
 
 import streamlit as st
+from datetime import datetime
 from data.fetcher import build_matchup_matrix
 from core.scoring import generate_nfl_projections
 from ui.render import render_nfl_dashboard
 
 # App Config
 st.set_page_config(page_title="LaunchCast NFL", page_icon="🏈", layout="wide")
-CURRENT_WEEK = 5 # Hardcoded for V1 testing, will be dynamic later
 
+# Determine current season dynamically
+CURRENT_YEAR = datetime.now().year
+CURRENT_MONTH = datetime.now().month
+
+# NFL season runs Sept-Dec (regular season), Jan-Feb (playoffs)
+# If we're in Jan-Aug, use previous year's data for testing
+if CURRENT_MONTH < 9:
+    DISPLAY_YEAR = CURRENT_YEAR - 1  # Use last season
+    DEFAULT_WEEK = 10  # Default to mid-season week for testing
+    IS_OFFSEASON = True
+else:
+    DISPLAY_YEAR = CURRENT_YEAR
+    DEFAULT_WEEK = 1
+    IS_OFFSEASON = False
+
+# Sidebar
+st.sidebar.title("LaunchCast NFL 🏈")
+
+if IS_OFFSEASON:
+    st.sidebar.warning("⚠️ **NFL Offseason**\n\nShowing 2025 season data for testing. Live projections begin September 2026.")
+
+week_selector = st.sidebar.number_input(
+    "Select Week", 
+    min_value=1, 
+    max_value=18, 
+    value=DEFAULT_WEEK
+)
+
+# Cache data loading
 @st.cache_data(ttl=3600)
-def load_and_score_data(week):
+def load_and_score_data(week, year):
     """Fetches raw data and runs the scoring engine. Cached for 1 hour."""
-    # 1. Get the raw matchup matrix (Players + Defensive Opponents)
-    matchup_df = build_matchup_matrix(week=week)
-    
-    if matchup_df.empty:
-        return None
+    try:
+        # 1. Get the raw matchup matrix (Players + Defensive Opponents)
+        matchup_df = build_matchup_matrix(week=week, year=year)
         
-    # 2. Run the math (Shrinkage, Matchups, Poisson/Normal Probs)
-    projections = generate_nfl_projections(matchup_df, current_week=week)
-    
-    return projections
+        if matchup_df.empty:
+            return None, "No data available for this week"
+            
+        # 2. Run the math (Shrinkage, Matchups, Poisson/Normal Probs)
+        projections = generate_nfl_projections(matchup_df, current_week=week)
+        
+        return projections, None
+    except Exception as e:
+        return None, f"Error: {str(e)}"
 
 # --- Main Execution ---
-st.sidebar.title("LaunchCast NFL 🏈")
-week_selector = st.sidebar.number_input("Select Week", min_value=1, max_value=18, value=CURRENT_WEEK)
+projections, error = load_and_score_data(week_selector, DISPLAY_YEAR)
 
-projections = load_and_score_data(week_selector)
-
-if projections is not None and not projections.empty:
-    # Render the UI (Pass empty schedule/rosters for V1 as we pull them inside fetcher)
-    render_nfl_dashboard(schedule=None, rosters=None, projections=projections)
+if error:
+    st.error(error)
+    if IS_OFFSEASON:
+        st.info("💡 **Tip:** This is expected during the offseason. The app is configured to show 2025 season data for testing.")
+elif projections is not None and not projections.empty:
+    # Render the UI
+    render_nfl_dashboard(
+        schedule=None,  # Will be fetched in render if needed
+        rosters=None, 
+        projections=projections,
+        is_offseason=IS_OFFSEASON,
+        display_year=DISPLAY_YEAR
+    )
 else:
-    st.error("No data available for this week yet. Check nflverse data availability.")
+    st.error("No data available for this week yet.")
+    if IS_OFFSEASON:
+        st.info("The app is ready for the 2026 season starting in September!")
