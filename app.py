@@ -18,8 +18,8 @@ CURRENT_MONTH = datetime.now().month
 # NFL season runs Sept-Dec (regular season), Jan-Feb (playoffs)
 # If we're in Jan-Aug, use previous year's data for testing
 if CURRENT_MONTH < 9:
-    DISPLAY_YEAR = CURRENT_YEAR - 1  # Use last season
-    DEFAULT_WEEK = 10  # Default to mid-season week for testing
+    DISPLAY_YEAR = 2025  # Force 2025 data during offseason
+    DEFAULT_WEEK = 10    # Default to mid-season week for testing
     IS_OFFSEASON = True
 else:
     DISPLAY_YEAR = CURRENT_YEAR
@@ -27,7 +27,7 @@ else:
     IS_OFFSEASON = False
 
 # Sidebar
-st.sidebar.title("LaunchCast NFL 🏈")
+st.sidebar.title("LaunchCast NFL ")
 
 if IS_OFFSEASON:
     st.sidebar.warning("⚠️ **NFL Offseason**\n\nShowing 2025 season data for testing. Live projections begin September 2026.")
@@ -67,7 +67,7 @@ if error:
 elif projections is not None and not projections.empty:
     # Render the UI
     render_nfl_dashboard(
-        schedule=None,  # Will be fetched in render if needed
+        schedule=None,
         rosters=None, 
         projections=projections,
         is_offseason=IS_OFFSEASON,
