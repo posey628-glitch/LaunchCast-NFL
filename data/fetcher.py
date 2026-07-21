@@ -1,6 +1,5 @@
 # data/fetcher.py
-# LaunchCast NFL — Data Fetcher with Diagnostics
-# Uses 2024 data (2025 not yet available), handles missing columns gracefully
+# LaunchCast NFL — Data Fetcher with Column Normalization Fix
 
 import pandas as pd
 import numpy as np
@@ -200,9 +199,9 @@ def get_team_defensive_stats(year: int = None) -> pd.DataFrame:
     
     try:
         import nfl_data_py as nfl
-        st.info(f"🛡️ Fetching {year} team defensive stats...")
-        # FIX: use 's_type' not 'stat_type' — that's the actual parameter name
-        def_stats = nfl.import_seasonal_data(year, s_type='def')
+        st.info(f"️ Fetching {year} team defensive stats...")
+        # FIX: nfl_data_py requires a LIST of years, not a single integer
+        def_stats = nfl.import_seasonal_data([year], s_type='def')
         
         if not def_stats.empty:
             # Return available columns
@@ -232,7 +231,7 @@ def build_matchup_matrix(week: int, year: int = None) -> pd.DataFrame:
     def_stats = get_team_defensive_stats(year)
     
     if def_stats.empty:
-        st.warning("⚠️ No defensive stats available - proceeding with neutral matchups")
+        st.warning("⚠️ No defensive stats available - proceeding without matchup adjustments")
         return players
     
     # Merge offense with defense
