@@ -1,6 +1,6 @@
 # data/fetcher.py
 # LaunchCast NFL — Data Fetcher with Diagnostics
-# Tries 2025, falls back to 2024, shows what's available
+# Uses 2024 data (2025 not yet available), handles missing columns gracefully
 
 import pandas as pd
 import numpy as np
@@ -11,11 +11,11 @@ from datetime import datetime
 CURRENT_YEAR = datetime.now().year
 CURRENT_MONTH = datetime.now().month
 
-# During offseason (Jan-Aug), try 2025 first, then 2024
+# During offseason (Jan-Aug), use 2024 (2025 not available yet)
 # During season (Sept-Dec), use current year
 if CURRENT_MONTH < 9:
-    PREFERRED_SEASON = 2025
-    FALLBACK_SEASON = 2024
+    PREFERRED_SEASON = 2024  # Changed from 2025 to 2024
+    FALLBACK_SEASON = 2023
 else:
     PREFERRED_SEASON = CURRENT_YEAR
     FALLBACK_SEASON = CURRENT_YEAR - 1
@@ -53,17 +53,32 @@ def get_weekly_player_stats(week: int, year: int = None) -> pd.DataFrame:
         if not week_data.empty:
             st.success(f"✅ Successfully loaded {len(week_data)} players from {year} Week {week}")
             
-            # Calculate derived metrics
+            # Calculate derived metrics - handle missing columns gracefully
+            # team_dropbacks might not exist, so calculate it or use default
+            if 'team_dropbacks' not in week_data.columns:
+                # Calculate team dropbacks as sum of routes per team per week
+                team_dropbacks = week_data.groupby(['team', 'week'])['routes'].sum().reset_index()
+                team_dropbacks.columns = ['team', 'week', 'team_dropbacks']
+                week_data = week_data.merge(team_dropbacks, on=['team', 'week'], how='left')
+            
             week_data['route_participation_pct'] = np.where(
                 week_data.get('team_dropbacks', 0) > 0,
                 (week_data.get('routes', 0) / week_data['team_dropbacks']) * 100,
                 0
             )
+            
             week_data['adot'] = np.where(
                 week_data.get('targets', 0) > 0,
                 week_data.get('air_yards', 0) / week_data['targets'],
                 0
             )
+            
+            # Calculate target share
+            if 'team_targets' not in week_data.columns:
+                team_targets = week_data.groupby(['team', 'week'])['targets'].sum().reset_index()
+                team_targets.columns = ['team', 'week', 'team_targets']
+                week_data = week_data.merge(team_targets, on=['team', 'week'], how='left')
+            
             week_data['target_share'] = np.where(
                 week_data.get('team_targets', 0) > 0,
                 week_data.get('targets', 0) / week_data['team_targets'],
@@ -76,7 +91,7 @@ def get_weekly_player_stats(week: int, year: int = None) -> pd.DataFrame:
             
     except Exception as e:
         errors.append(f"{year} failed: {str(e)[:100]}")
-        st.warning(f" {year} data fetch failed: {str(e)[:150]}")
+        st.warning(f"❌ {year} data fetch failed: {str(e)[:150]}")
     
     # Try fallback season
     if year != FALLBACK_SEASON:
@@ -89,16 +104,29 @@ def get_weekly_player_stats(week: int, year: int = None) -> pd.DataFrame:
             if not week_data.empty:
                 st.success(f"✅ Loaded {len(week_data)} players from {FALLBACK_SEASON} Week {week} (fallback)")
                 
+                # Calculate derived metrics
+                if 'team_dropbacks' not in week_data.columns:
+                    team_dropbacks = week_data.groupby(['team', 'week'])['routes'].sum().reset_index()
+                    team_dropbacks.columns = ['team', 'week', 'team_dropbacks']
+                    week_data = week_data.merge(team_dropbacks, on=['team', 'week'], how='left')
+                
                 week_data['route_participation_pct'] = np.where(
                     week_data.get('team_dropbacks', 0) > 0,
                     (week_data.get('routes', 0) / week_data['team_dropbacks']) * 100,
                     0
                 )
+                
                 week_data['adot'] = np.where(
                     week_data.get('targets', 0) > 0,
                     week_data.get('air_yards', 0) / week_data['targets'],
                     0
                 )
+                
+                if 'team_targets' not in week_data.columns:
+                    team_targets = week_data.groupby(['team', 'week'])['targets'].sum().reset_index()
+                    team_targets.columns = ['team', 'week', 'team_targets']
+                    week_data = week_data.merge(team_targets, on=['team', 'week'], how='left')
+                
                 week_data['target_share'] = np.where(
                     week_data.get('team_targets', 0) > 0,
                     week_data.get('targets', 0) / week_data['team_targets'],
@@ -111,7 +139,7 @@ def get_weekly_player_stats(week: int, year: int = None) -> pd.DataFrame:
             st.error(f"❌ Fallback to {FALLBACK_SEASON} also failed: {str(e)[:150]}")
     
     # Show available seasons
-    st.info("📊 Checking what seasons are available...")
+    st.info(" Checking what seasons are available...")
     available = check_available_seasons()
     if available:
         st.write("**Available seasons:**")
@@ -135,8 +163,15 @@ def get_team_defensive_stats(year: int = None) -> pd.DataFrame:
         def_stats = team_stats[team_stats['side'] == 'def'].copy()
         
         if not def_stats.empty:
-            return def_stats[['team', 'week', 'season', 'pass_epa', 'rush_epa', 
-                            'pressure_rate', 'stuff_rate']]
+            # Return available columns
+            available_cols = ['team', 'week', 'season']
+            optional_cols = ['pass_epa', 'rush_epa', 'pressure_rate', 'stuff_rate']
+            
+            for col in optional_cols:
+                if col in def_stats.columns:
+                    available_cols.append(col)
+            
+            return def_stats[available_cols]
     except Exception as e:
         st.warning(f"️ Defensive stats fetch failed: {str(e)[:100]}")
     
