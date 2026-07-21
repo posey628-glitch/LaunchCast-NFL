@@ -193,15 +193,15 @@ def get_weekly_player_stats(week: int, year: int = None) -> pd.DataFrame:
     return pd.DataFrame()
 
 def get_team_defensive_stats(year: int = None) -> pd.DataFrame:
-    """Fetch team defensive stats."""
+    """Fetch team defensive stats using import_team_stats with stat_type='def'."""
     if year is None:
         year = PREFERRED_SEASON
     
     try:
         import nfl_data_py as nfl
         st.info(f"️ Fetching {year} team defensive stats...")
-        # FIX: nfl_data_py requires a LIST of years, not a single integer
-        def_stats = nfl.import_seasonal_data([year], s_type='def')
+        # FIX: use import_team_stats with stat_type='def' (not import_seasonal_data)
+        def_stats = nfl.import_team_stats(year, stat_type='def')
         
         if not def_stats.empty:
             # Return available columns
@@ -231,7 +231,7 @@ def build_matchup_matrix(week: int, year: int = None) -> pd.DataFrame:
     def_stats = get_team_defensive_stats(year)
     
     if def_stats.empty:
-        st.warning("⚠️ No defensive stats available - proceeding without matchup adjustments")
+        st.warning("⚠️ No defensive stats available - proceeding with neutral matchups")
         return players
     
     # Merge offense with defense
