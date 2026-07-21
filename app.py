@@ -1,6 +1,5 @@
 # app.py
 # LaunchCast NFL — Main Entry Point
-# Handles both in-season and offseason gracefully
 
 import streamlit as st
 from datetime import datetime
@@ -43,6 +42,8 @@ week_selector = st.sidebar.number_input(
 def load_and_score_data(week, year):
     """Fetches raw data and runs the scoring engine. Cached for 1 hour."""
     try:
+        st.info(f"🏈 Loading NFL data for Week {week}, {year} season...")
+        
         # 1. Get the raw matchup matrix (Players + Defensive Opponents)
         matchup_df = build_matchup_matrix(week=week, year=year)
         
@@ -50,10 +51,20 @@ def load_and_score_data(week, year):
             return None, "No data available for this week"
             
         # 2. Run the math (Shrinkage, Matchups, Poisson/Normal Probs)
+        st.info(f"📊 Processing {len(matchup_df)} players...")
         projections = generate_nfl_projections(matchup_df, current_week=week)
         
+        if projections.empty:
+            return None, "Scoring produced no results"
+        
+        st.success(f"✅ Generated projections for {len(projections)} players")
         return projections, None
+        
     except Exception as e:
+        import traceback
+        error_detail = traceback.format_exc()
+        st.error(f"❌ Error: {str(e)}")
+        st.code(error_detail)
         return None, f"Error: {str(e)}"
 
 # --- Main Execution ---
@@ -62,7 +73,7 @@ projections, error = load_and_score_data(week_selector, DISPLAY_YEAR)
 if error:
     st.error(error)
     if IS_OFFSEASON:
-        st.info("💡 **Tip:** This is expected during the offseason. The app is configured to show 2025 season data for testing.")
+        st.info(" **Tip:** This is expected during the offseason. The app is configured to show 2025 season data for testing.")
 elif projections is not None and not projections.empty:
     # Render the UI
     render_nfl_dashboard(
