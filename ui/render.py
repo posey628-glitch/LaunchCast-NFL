@@ -29,7 +29,7 @@ def get_verdict_emoji(prob):
     """Returns an emoji based on the probability threshold."""
     if prob >= 0.60: return "🔥" # High confidence
     if prob >= 0.45: return "✅" # Solid play
-    if prob >= 0.30: return "🟡" # Lean
+    if prob >= 0.30: return "" # Lean
     return "⚠️" # Pass
 
 # ============================================================================
@@ -91,12 +91,17 @@ def render_prop_leaderboard(projections_df, prop_type='td'):
 # ============================================================================
 # 3. THE MAIN DASHBOARD ORCHESTRATOR
 # ============================================================================
-def render_nfl_dashboard(schedule, rosters, projections):
+def render_nfl_dashboard(schedule, rosters, projections, is_offseason=False, display_year=2025):
     """
     The main Streamlit layout. Uses tabs to separate props, keeping the UI clean.
     """
     st.title("🏈 LaunchCast NFL")
-    st.caption("Evidence-based prop projections. Powered by nflverse & Bayesian shrinkage.")
+    
+    if is_offseason:
+        st.caption(f"Evidence-based prop projections (2025 season data for testing). Live 2026 season starts September.")
+        st.info("📅 **Offseason Mode:** Showing historical 2025 data. Switch weeks in the sidebar to test different matchups.")
+    else:
+        st.caption("Evidence-based prop projections powered by nflverse & Bayesian shrinkage.")
 
     # Top-level Prop Tabs
     tab_td, tab_yards, tab_rec = st.tabs(["🎯 Touchdowns", "📏 Receiving Yards", "🎯 Receptions"])
@@ -118,7 +123,10 @@ def render_nfl_dashboard(schedule, rosters, projections):
     # Sidebar for Data Status
     with st.sidebar:
         st.header("📊 Data Status")
-        st.metric("Games Scheduled", len(schedule) if schedule is not None else 0)
+        st.metric("Season", display_year)
         st.metric("Players Tracked", len(projections) if projections is not None else 0)
         st.divider()
-        st.info("V1 Engine: Uses nflverse data, EPA matchups, and week-weighted shrinkage.")
+        if is_offseason:
+            st.info("V1 Engine: Uses nflverse data, EPA matchups, and week-weighted shrinkage.\n\n**Offseason testing mode active.**")
+        else:
+            st.info("V1 Engine: Uses nflverse data, EPA matchups, and week-weighted shrinkage.")
