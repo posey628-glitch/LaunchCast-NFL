@@ -1,6 +1,5 @@
 # app.py
 # LaunchCast NFL — Main Entry Point
-# Handles both in-season and offseason gracefully
 
 import streamlit as st
 from datetime import datetime
@@ -9,14 +8,13 @@ from core.scoring import generate_nfl_projections
 from ui.render import render_nfl_dashboard
 
 # App Config
-st.set_page_config(page_title="LaunchCast NFL", page_icon="🏈", layout="wide")
+st.set_page_config(page_title="LaunchCast NFL", page_icon="", layout="wide")
 
 # Determine current season dynamically
 CURRENT_YEAR = datetime.now().year
 CURRENT_MONTH = datetime.now().month
 
-# NFL season runs Sept-Dec (regular season), Jan-Feb (playoffs)
-# If we're in Jan-Aug, use previous year's data for testing
+# NFL season runs Sept-Dec. If we're in Jan-Aug, use 2025 data for testing.
 if CURRENT_MONTH < 9:
     DISPLAY_YEAR = 2025  # Force 2025 data during offseason
     DEFAULT_WEEK = 10    # Default to mid-season week for testing
