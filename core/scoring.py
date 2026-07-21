@@ -119,7 +119,7 @@ def generate_nfl_projections(matchup_df, current_week):
     # For WRs, volume = routes_run. 
     df['shrunk_target_share'] = df.apply(
         lambda row: calculate_shrunk_rate(
-            row['target_share'], row['routes_run'], current_week, 
+            row.get('target_share', 0), row.get('routes_run', 0), current_week, 
             LEAGUE_AVG_TARGET_SHARE, 'WR'
         ), axis=1
     )
@@ -128,7 +128,7 @@ def generate_nfl_projections(matchup_df, current_week):
     df['matchup_multiplier'] = df.apply(
         lambda row: apply_defensive_matchup(
             1.0, row.get('opp_pass_epa_allowed', 0), 
-            row.get('opp_pressure_rate', 0.25), row['position']
+            row.get('opp_pressure_rate', 0.25), row.get('position', 'WR')
         ), axis=1
     )
     
@@ -138,7 +138,7 @@ def generate_nfl_projections(matchup_df, current_week):
     TEAM_AVG_PASS_ATTEMPTS = 35.0 
     
     df['proj_targets'] = (df['shrunk_target_share'] * TEAM_AVG_PASS_ATTEMPTS * df['matchup_multiplier']).round(1)
-    df['proj_rec_yards'] = (df['proj_targets'] * (df['adot'] + LEAGUE_AVG_YAC)).round(1)
+    df['proj_rec_yards'] = (df['proj_targets'] * (df.get('adot', 8.0) + LEAGUE_AVG_YAC)).round(1)
     df['proj_tds'] = (df['proj_targets'] * LEAGUE_AVG_TD_RATE * df['matchup_multiplier']).round(2)
     
     # --- STEP 4: Calculate Prop Probabilities ---
