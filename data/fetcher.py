@@ -123,7 +123,7 @@ def get_weekly_player_stats(week: int, year: int = TARGET_SEASON) -> pd.DataFram
         return process_weekly_data(weekly_data, def_stats)
     
     # Try Source 2: GitHub CSV
-    print("⚠️  Trying backup source (GitHub)...")
+    print("️  Trying backup source (GitHub)...")
     weekly_data, def_stats = fetch_from_github(week, year)
     if weekly_data is not None and not weekly_data.empty:
         print("✅ Data loaded from GitHub backup")
