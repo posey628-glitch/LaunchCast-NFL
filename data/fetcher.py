@@ -85,62 +85,14 @@ def get_weekly_player_stats(week: int, year: int = None) -> pd.DataFrame:
     return pd.DataFrame()
 
 def get_team_defensive_stats(week: int, year: int = None) -> pd.DataFrame:
-    if year is None:
-        year = PREFERRED_SEASON
-    
-    try:
-        import nfl_data_py as nfl
-        # FIX: Use s_type='def' instead of stat_type='def'
-        def_stats = nfl.import_seasonal_data([year], s_type='def')
-        
-        if not def_stats.empty:
-            available_cols = ['team', 'week', 'season']
-            optional_cols = ['pass_epa', 'rush_epa', 'pressure_rate', 'stuff_rate']
-            
-            for col in optional_cols:
-                if col in def_stats.columns:
-                    available_cols.append(col)
-            
-            return def_stats[available_cols]
-    except Exception as e:
-        st.warning(f"Defensive stats fetch failed: {e}")
-    
+    # Defensive stats not available in current nfl_data_py version
+    # Deferred until library update or alternative data source
     return pd.DataFrame()
 
 def build_matchup_matrix(week: int, year: int = None) -> pd.DataFrame:
-    if year is None:
-        year = PREFERRED_SEASON
-    
     players = get_weekly_player_stats(week, year)
     if players.empty:
         return pd.DataFrame()
     
-    def_stats = get_team_defensive_stats(week, year)
-    if def_stats.empty:
-        st.warning("No defensive stats available")
-        return players
-    
-    latest_def = def_stats.sort_values('week').groupby('team').last().reset_index()
-    
-    def_cols = {
-        'pass_epa': 'opp_pass_epa_allowed',
-        'rush_epa': 'opp_rush_epa_allowed',
-        'pressure_rate': 'opp_pressure_rate',
-        'stuff_rate': 'opp_stuff_rate'
-    }
-    
-    valid_cols = {k: v for k, v in def_cols.items() if k in latest_def.columns}
-    latest_def = latest_def.rename(columns=valid_cols)
-    
-    matchup_df = players.merge(
-        latest_def[['team'] + list(valid_cols.keys())],
-        left_on='opponent_team',
-        right_on='team',
-        how='left',
-        suffixes=('', '_def')
-    )
-    
-    if 'team_def' in matchup_df.columns:
-        matchup_df = matchup_df.drop(columns=['team_def'])
-    
-    return matchup_df
+    # Defensive stats skipped — will be added when data source supports it
+    return players
