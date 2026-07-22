@@ -1,5 +1,5 @@
 # data/fetcher.py
-# LaunchCast NFL — Data Fetcher with Dynamic Column Detection
+# LaunchCast NFL — Data Fetcher
 
 import pandas as pd
 import numpy as np
@@ -17,7 +17,6 @@ else:
     FALLBACK_SEASON = CURRENT_YEAR - 1
 
 def normalize_columns(df):
-    """Normalize column names to our standard names."""
     rename_map = {}
     if 'team' not in df.columns:
         if 'recent_team' in df.columns:
@@ -34,7 +33,6 @@ def normalize_columns(df):
     return df
 
 def get_weekly_player_stats(week: int, year: int = None) -> pd.DataFrame:
-    """Fetch weekly player stats."""
     if year is None:
         year = PREFERRED_SEASON
     
@@ -46,7 +44,6 @@ def get_weekly_player_stats(week: int, year: int = None) -> pd.DataFrame:
         if not week_data.empty:
             week_data = normalize_columns(week_data)
             
-            # Calculate derived metrics safely
             if 'team_dropbacks' not in week_data.columns:
                 if 'team' in week_data.columns and 'routes' in week_data.columns:
                     team_dropbacks = week_data.groupby(['team', 'week'])['routes'].sum().reset_index()
@@ -88,88 +85,62 @@ def get_weekly_player_stats(week: int, year: int = None) -> pd.DataFrame:
     return pd.DataFrame()
 
 def get_team_defensive_stats(week: int, year: int = None) -> pd.DataFrame:
-    """Fetch team defensive stats with dynamic column detection."""
     if year is None:
         year = PREFERRED_SEASON
     
     try:
         import nfl_data_py as nfl
-        
-        # Try to get defensive stats - try multiple approaches
-        def_stats = pd.DataFrame()
-        
-        # Approach 1: Try import_seasonal_data with stat_type='def'
-        try:
-            def_stats = nfl.import_seasonal_data(year, stat_type='def')
-            if not def_stats.empty:
-                st.success(f"✅ Loaded defensive stats via import_seasonal_data")
-        except Exception as e1:
-            st.warning(f"import_seasonal_data failed: {e1}")
-            
-            # Approach 2: Try to derive from weekly data
-            try:
-                weekly = nfl.import_weekly_data([year])
-                # Group by opponent team to get defensive aggregates
-                def_agg = weekly.groupby(['opponent_team', 'week']).agg({
-                    'passing_yards': 'sum',
-                    'passing_tds': 'sum',
-                    'rushing_yards': 'sum',
-                    'rushing_tds': 'sum',
-                    'sacks': 'sum',
-                }).reset_index()
-                
-                def_agg = def_agg.rename(columns={
-                    'opponent_team': 'team',
-                    'passing_yards': 'pass_yards_allowed',
-                    'passing_tds': 'pass_tds_allowed',
-                    'rushing_yards': 'rush_yards_allowed',
-                    'rushing_tds': 'rush_tds_allowed',
-                })
-                
-                def_stats = def_agg
-                st.success(f"✅ Loaded defensive stats derived from weekly data")
-            except Exception as e2:
-                st.warning(f"Weekly derivation failed: {e2}")
+        # FIX: Use s_type='def' instead of stat_type='def'
+        def_stats = nfl.import_seasonal_data([year], s_type='def')
         
         if not def_stats.empty:
-            # Return whatever columns we have
-            return def_stats
+            available_cols = ['team', 'week', 'season']
+            optional_cols = ['pass_epa', 'rush_epa', 'pressure_rate', 'stuff_rate']
+            
+            for col in optional_cols:
+                if col in def_stats.columns:
+                    available_cols.append(col)
+            
+            return def_stats[available_cols]
     except Exception as e:
         st.warning(f"Defensive stats fetch failed: {e}")
     
     return pd.DataFrame()
 
 def build_matchup_matrix(week: int, year: int = None) -> pd.DataFrame:
-    """Build matchup matrix."""
+    if year is None:
+        year = PREFERRED_SEASON
+    
     players = get_weekly_player_stats(week, year)
     if players.empty:
         return pd.DataFrame()
     
     def_stats = get_team_defensive_stats(week, year)
     if def_stats.empty:
-        st.warning("No defensive stats available - proceeding without matchup adjustments")
+        st.warning("No defensive stats available")
         return players
     
-    # Merge offense with defense
     latest_def = def_stats.sort_values('week').groupby('team').last().reset_index()
     
-    # Only merge columns that exist
-    def_cols_to_merge = {}
-    for col in ['pass_yards_allowed', 'rush_yards_allowed', 'pass_tds_allowed', 'sacks']:
-        if col in latest_def.columns:
-            def_cols_to_merge[col] = f'opp_{col}'
+    def_cols = {
+        'pass_epa': 'opp_pass_epa_allowed',
+        'rush_epa': 'opp_rush_epa_allowed',
+        'pressure_rate': 'opp_pressure_rate',
+        'stuff_rate': 'opp_stuff_rate'
+    }
     
-    if def_cols_to_merge:
-        latest_def = latest_def.rename(columns=def_cols_to_merge)
-        players = players.merge(
-            latest_def[['team'] + list(def_cols_to_merge.values())],
-            left_on='opponent_team',
-            right_on='team',
-            how='left',
-            suffixes=('', '_def')
-        )
-        
-        if 'team_def' in players.columns:
-            players = players.drop(columns=['team_def'])
+    valid_cols = {k: v for k, v in def_cols.items() if k in latest_def.columns}
+    latest_def = latest_def.rename(columns=valid_cols)
     
-    return players
+    matchup_df = players.merge(
+        latest_def[['team'] + list(valid_cols.keys())],
+        left_on='opponent_team',
+        right_on='team',
+        how='left',
+        suffixes=('', '_def')
+    )
+    
+    if 'team_def' in matchup_df.columns:
+        matchup_df = matchup_df.drop(columns=['team_def'])
+    
+    return matchup_df
