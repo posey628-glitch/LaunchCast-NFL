@@ -12,31 +12,12 @@ from datetime import datetime
 CURRENT_YEAR = datetime.now().year
 CURRENT_MONTH = datetime.now().month
 
-# During offseason (Jan-Aug), use 2024 (2025 not available yet)
-# During season (Sept-Dec), use current year
 if CURRENT_MONTH < 9:
     PREFERRED_SEASON = 2024
     FALLBACK_SEASON = 2023
 else:
     PREFERRED_SEASON = CURRENT_YEAR
     FALLBACK_SEASON = CURRENT_YEAR - 1
-
-def normalize_columns(df):
-    """Fixes column name mismatches from nfl_data_py."""
-    rename_map = {}
-    if 'team' not in df.columns:
-        if 'recent_team' in df.columns:
-            rename_map['recent_team'] = 'team'
-        elif 'posteam' in df.columns:
-            rename_map['posteam'] = 'team'
-    if 'opponent_team' not in df.columns:
-        if 'defteam' in df.columns:
-            rename_map['defteam'] = 'opponent_team'
-        elif 'opp' in df.columns:
-            rename_map['opp'] = 'opponent_team'
-    if rename_map:
-        df = df.rename(columns=rename_map)
-    return df
 
 def get_weekly_player_stats(week: int, year: int = None) -> pd.DataFrame:
     """Fetch weekly player stats with ALL advanced metrics."""
@@ -49,9 +30,8 @@ def get_weekly_player_stats(week: int, year: int = None) -> pd.DataFrame:
         week_data = all_data[all_data['week'] == week].copy()
         
         if not week_data.empty:
-            week_data = normalize_columns(week_data)
-            
-            # === DERIVED METRICS (compute from raw data) ===
+            # Calculate derived metrics using .get() for safety
+            # (columns that don't exist return 0, no KeyError)
             
             # Target efficiency
             week_data['catch_rate'] = np.where(
@@ -78,13 +58,6 @@ def get_weekly_player_stats(week: int, year: int = None) -> pd.DataFrame:
             week_data['drop_rate'] = np.where(
                 week_data.get('targets', 0) > 0,
                 week_data.get('drops', 0) / week_data['targets'],
-                0
-            )
-            
-            # Contested catch rate
-            week_data['contested_catch_rate'] = np.where(
-                week_data.get('contested_targets', 0) > 0,
-                week_data.get('contested_catches', 0) / week_data['contested_targets'],
                 0
             )
             
@@ -190,7 +163,7 @@ def get_team_advanced_metrics(week: int, year: int = None) -> pd.DataFrame:
         # Pace factor (inverse of seconds per play — faster = more plays)
         team_agg['pace_factor'] = np.where(
             team_agg['tempo_seconds_per_play'] > 0,
-            30 / team_agg['tempo_seconds_per_play'],  # normalized to 30s baseline
+            30 / team_agg['tempo_seconds_per_play'],
             1.0
         )
         
@@ -237,14 +210,14 @@ def get_team_defensive_stats(week: int, year: int = None) -> pd.DataFrame:
         def_agg['def_contested_catch_rate'] = np.where(
             def_agg['contested_targets'] > 0,
             def_agg['contested_catches'] / def_agg['contested_targets'],
-            0.5  # league average fallback
+            0.5
         )
         
         # Catch rate allowed
         def_agg['def_catch_rate_allowed'] = np.where(
             def_agg['targets'] > 0,
             def_agg['receptions'] / def_agg['targets'],
-            0.65  # league average fallback
+            0.65
         )
         
         # Filter to current week
