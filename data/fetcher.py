@@ -1,7 +1,5 @@
 # data/fetcher.py
 # LaunchCast NFL — Data Fetcher with Advanced Metrics
-# Pulls player stats, defensive stats, AND advanced metrics
-# (tempo, play-action, RPO, red zone, slot rate, separation, etc.)
 
 import pandas as pd
 import numpy as np
@@ -12,6 +10,8 @@ from datetime import datetime
 CURRENT_YEAR = datetime.now().year
 CURRENT_MONTH = datetime.now().month
 
+# During offseason (Jan-Aug), use 2024 (2025 not available yet)
+# During season (Sept-Dec), use current year
 if CURRENT_MONTH < 9:
     PREFERRED_SEASON = 2024
     FALLBACK_SEASON = 2023
@@ -20,179 +20,142 @@ else:
     FALLBACK_SEASON = CURRENT_YEAR - 1
 
 def get_weekly_player_stats(week: int, year: int = None) -> pd.DataFrame:
-    """Fetch weekly player stats with ALL advanced metrics."""
+    """Fetch weekly player stats with fallback logic."""
     if year is None:
         year = PREFERRED_SEASON
     
+    errors = []
+    
+    # Try preferred season first
     try:
         import nfl_data_py as nfl
+        st.info(f"🔄 Attempting to load {year} Week {week} data...")
+        
         all_data = nfl.import_weekly_data([year])
         week_data = all_data[all_data['week'] == week].copy()
         
         if not week_data.empty:
-            # Calculate derived metrics using .get() for safety
-            # (columns that don't exist return 0, no KeyError)
+            st.success(f"✅ Successfully loaded {len(week_data)} players from {year} Week {week}")
             
-            # Target efficiency
-            week_data['catch_rate'] = np.where(
-                week_data.get('targets', 0) > 0,
-                week_data.get('receptions', 0) / week_data['targets'],
-                0
-            )
+            # Calculate derived metrics safely using .get() consistently
+            # First, ensure team_dropbacks exists by computing it if needed
+            if 'team_dropbacks' not in week_data.columns:
+                if 'team' in week_data.columns and 'routes' in week_data.columns:
+                    team_dropbacks = week_data.groupby(['team', 'week'])['routes'].sum().reset_index()
+                    team_dropbacks.columns = ['team', 'week', 'team_dropbacks']
+                    week_data = week_data.merge(team_dropbacks, on=['team', 'week'], how='left')
+                else:
+                    week_data['team_dropbacks'] = 0
             
-            # YAC efficiency
-            week_data['yac_per_rec'] = np.where(
-                week_data.get('receptions', 0) > 0,
-                week_data.get('yards_after_catch', 0) / week_data['receptions'],
-                0
-            )
-            
-            # Air yards per target
-            week_data['ay_per_target'] = np.where(
-                week_data.get('targets', 0) > 0,
-                week_data.get('air_yards', 0) / week_data['targets'],
-                0
-            )
-            
-            # Drop rate
-            week_data['drop_rate'] = np.where(
-                week_data.get('targets', 0) > 0,
-                week_data.get('drops', 0) / week_data['targets'],
-                0
-            )
-            
-            # Route participation
+            # Now safe to use bracket notation since column exists
             week_data['route_participation_pct'] = np.where(
-                week_data.get('team_dropbacks', 0) > 0,
-                (week_data.get('routes', 0) / week_data['team_dropbacks']) * 100,
+                week_data['team_dropbacks'] > 0,
+                (week_data['routes'] / week_data['team_dropbacks']) * 100,
                 0
             )
             
-            # Yards per route run
-            week_data['yards_per_route'] = np.where(
-                week_data.get('routes', 0) > 0,
-                week_data.get('receiving_yards', 0) / week_data['routes'],
+            week_data['adot'] = np.where(
+                week_data['targets'] > 0,
+                week_data['air_yards'] / week_data['targets'],
                 0
             )
             
-            # Target share
+            # Calculate target share
+            if 'team_targets' not in week_data.columns:
+                if 'team' in week_data.columns and 'targets' in week_data.columns:
+                    team_targets = week_data.groupby(['team', 'week'])['targets'].sum().reset_index()
+                    team_targets.columns = ['team', 'week', 'team_targets']
+                    week_data = week_data.merge(team_targets, on=['team', 'week'], how='left')
+                else:
+                    week_data['team_targets'] = 0
+            
             week_data['target_share'] = np.where(
-                week_data.get('team_targets', 0) > 0,
-                week_data.get('targets', 0) / week_data['team_targets'],
+                week_data['team_targets'] > 0,
+                week_data['targets'] / week_data['team_targets'],
                 0
             )
-            
-            # Air yards share
-            week_data['air_yards_share'] = np.where(
-                week_data.get('team_air_yards', 0) > 0,
-                week_data.get('air_yards', 0) / week_data['team_air_yards'],
-                0
-            )
-            
-            # Red zone target share
-            week_data['rz_target_share'] = np.where(
-                week_data.get('team_rz_targets', 0) > 0,
-                week_data.get('red_zone_targets', 0) / week_data['team_rz_targets'],
-                0
-            )
-            
-            # Slot rate
-            week_data['slot_rate'] = np.where(
-                week_data.get('routes', 0) > 0,
-                week_data.get('slot_routes', 0) / week_data['routes'],
-                0
-            )
-            
-            # Separation average (feet)
-            week_data['separation_avg'] = week_data.get('separation', 0)
-            
-            # First read target share
-            week_data['first_read_share'] = np.where(
-                week_data.get('targets', 0) > 0,
-                week_data.get('first_read_targets', 0) / week_data['targets'],
-                0
-            )
-            
-            # Pressure rate when targeted
-            week_data['pressure_rate_targeted'] = week_data.get('pressure_rate_when_targeted', 0)
-            
-            # Clean pocket rate
-            week_data['clean_pocket_rate'] = week_data.get('clean_pocket_pct', 0)
-            
-            # Time to throw
-            week_data['time_to_throw'] = week_data.get('avg_time_to_throw', 0)
             
             return week_data
+        else:
+            errors.append(f"{year} Week {week} has no data")
+            
     except Exception as e:
-        st.warning(f"Player stats fetch failed: {e}")
+        errors.append(f"{year} failed: {str(e)[:100]}")
+        st.warning(f"❌ {year} data fetch failed: {str(e)[:150]}")
     
-    return pd.DataFrame()
-
-def get_team_advanced_metrics(week: int, year: int = None) -> pd.DataFrame:
-    """Fetch team-level advanced metrics (tempo, play-action, RPO, etc.)."""
-    if year is None:
-        year = PREFERRED_SEASON
+    # Try fallback season
+    if year != FALLBACK_SEASON:
+        st.info(f"🔄 Falling back to {FALLBACK_SEASON}...")
+        try:
+            import nfl_data_py as nfl
+            all_data = nfl.import_weekly_data([FALLBACK_SEASON])
+            week_data = all_data[all_data['week'] == week].copy()
+            
+            if not week_data.empty:
+                st.success(f"✅ Loaded {len(week_data)} players from {FALLBACK_SEASON} Week {week} (fallback)")
+                
+                # Same safe calculations for fallback
+                if 'team_dropbacks' not in week_data.columns:
+                    if 'team' in week_data.columns and 'routes' in week_data.columns:
+                        team_dropbacks = week_data.groupby(['team', 'week'])['routes'].sum().reset_index()
+                        team_dropbacks.columns = ['team', 'week', 'team_dropbacks']
+                        week_data = week_data.merge(team_dropbacks, on=['team', 'week'], how='left')
+                    else:
+                        week_data['team_dropbacks'] = 0
+                
+                week_data['route_participation_pct'] = np.where(
+                    week_data['team_dropbacks'] > 0,
+                    (week_data['routes'] / week_data['team_dropbacks']) * 100,
+                    0
+                )
+                
+                week_data['adot'] = np.where(
+                    week_data['targets'] > 0,
+                    week_data['air_yards'] / week_data['targets'],
+                    0
+                )
+                
+                if 'team_targets' not in week_data.columns:
+                    if 'team' in week_data.columns and 'targets' in week_data.columns:
+                        team_targets = week_data.groupby(['team', 'week'])['targets'].sum().reset_index()
+                        team_targets.columns = ['team', 'week', 'team_targets']
+                        week_data = week_data.merge(team_targets, on=['team', 'week'], how='left')
+                    else:
+                        week_data['team_targets'] = 0
+                
+                week_data['target_share'] = np.where(
+                    week_data['team_targets'] > 0,
+                    week_data['targets'] / week_data['team_targets'],
+                    0
+                )
+                
+                return week_data
+        except Exception as e:
+            errors.append(f"{FALLBACK_SEASON} fallback failed: {str(e)[:100]}")
+            st.error(f"❌ Fallback to {FALLBACK_SEASON} also failed: {str(e)[:150]}")
     
-    try:
-        import nfl_data_py as nfl
-        
-        # Team situational stats
-        team_data = nfl.import_weekly_data([year])
-        
-        # Aggregate to team level
-        team_agg = team_data[team_data['week'] <= week].groupby(['team', 'week']).agg({
-            'play_action_pct': 'mean',
-            'rpo_pct': 'mean',
-            'motion_pct': 'mean',
-            'shift_pct': 'mean',
-            'tempo_seconds_per_play': 'mean',
-            'neutral_script_pass_rate': 'mean',
-            'red_zone_targets': 'sum',
-            'team_targets': 'sum',
-            'team_air_yards': 'sum',
-            'team_dropbacks': 'sum',
-        }).reset_index()
-        
-        # Compute derived team metrics
-        team_agg['rz_target_share_team'] = np.where(
-            team_agg['team_targets'] > 0,
-            team_agg['red_zone_targets'] / team_agg['team_targets'],
-            0
-        )
-        
-        # Pace factor (inverse of seconds per play — faster = more plays)
-        team_agg['pace_factor'] = np.where(
-            team_agg['tempo_seconds_per_play'] > 0,
-            30 / team_agg['tempo_seconds_per_play'],
-            1.0
-        )
-        
-        return team_agg
-    except Exception as e:
-        st.warning(f"Team advanced metrics fetch failed: {e}")
-    
+    # All attempts failed
+    st.error(f"❌ All data sources failed. Errors: {'; '.join(errors)}")
     return pd.DataFrame()
 
 def get_team_defensive_stats(week: int, year: int = None) -> pd.DataFrame:
-    """Fetch team defensive stats including advanced metrics."""
+    """Fetch team defensive stats."""
     if year is None:
         year = PREFERRED_SEASON
     
     try:
         import nfl_data_py as nfl
+        st.info(f"🛡️ Fetching {year} team defensive stats...")
         
-        # Get defensive stats
-        def_data = nfl.import_weekly_data([year])
+        # Get defensive stats from weekly data
+        all_data = nfl.import_weekly_data([year])
         
-        # Filter to defensive rows (opponent_team is the defense)
         # Group by opponent_team to get defensive aggregates
-        def_agg = def_data.groupby(['opponent_team', 'week']).agg({
+        def_agg = all_data.groupby(['opponent_team', 'week']).agg({
             'pressure_rate_when_targeted': 'mean',
             'clean_pocket_pct': 'mean',
             'avg_time_to_throw': 'mean',
             'separation': 'mean',
-            'contested_targets': 'sum',
-            'contested_catches': 'sum',
             'targets': 'sum',
             'receptions': 'sum',
         }).reset_index()
@@ -206,13 +169,6 @@ def get_team_defensive_stats(week: int, year: int = None) -> pd.DataFrame:
             'separation': 'def_separation_allowed',
         })
         
-        # Contested catch rate allowed
-        def_agg['def_contested_catch_rate'] = np.where(
-            def_agg['contested_targets'] > 0,
-            def_agg['contested_catches'] / def_agg['contested_targets'],
-            0.5
-        )
-        
         # Catch rate allowed
         def_agg['def_catch_rate_allowed'] = np.where(
             def_agg['targets'] > 0,
@@ -223,50 +179,46 @@ def get_team_defensive_stats(week: int, year: int = None) -> pd.DataFrame:
         # Filter to current week
         def_agg = def_agg[def_agg['week'] == week]
         
+        st.success(f"✅ Loaded defensive stats for {len(def_agg)} teams")
         return def_agg
     except Exception as e:
-        st.warning(f"Defensive stats fetch failed: {e}")
+        st.warning(f"⚠️ Defensive stats fetch failed: {str(e)[:100]}")
     
     return pd.DataFrame()
 
 def build_matchup_matrix(week: int, year: int = None) -> pd.DataFrame:
-    """Build complete matchup matrix with ALL advanced metrics."""
-    if year is None:
-        year = PREFERRED_SEASON
-    
-    # Get player stats
+    """Build matchup matrix with error handling."""
     players = get_weekly_player_stats(week, year)
     if players.empty:
         return pd.DataFrame()
     
-    # Get team advanced metrics
-    team_advanced = get_team_advanced_metrics(week, year)
-    if not team_advanced.empty:
-        # Merge team metrics onto players
-        players = players.merge(
-            team_advanced[['team', 'week', 'play_action_pct', 'rpo_pct', 
-                          'motion_pct', 'shift_pct', 'pace_factor',
-                          'neutral_script_pass_rate', 'rz_target_share_team']],
-            on=['team', 'week'],
-            how='left'
-        )
-    
-    # Get defensive stats
     def_stats = get_team_defensive_stats(week, year)
-    if not def_stats.empty:
-        # Merge defensive stats
-        players = players.merge(
-            def_stats[['team', 'week', 'def_pressure_rate', 'def_clean_pocket_rate',
-                      'def_time_to_throw', 'def_separation_allowed',
-                      'def_contested_catch_rate', 'def_catch_rate_allowed']],
-            left_on=['opponent_team', 'week'],
-            right_on=['team', 'week'],
-            how='left',
-            suffixes=('', '_def')
-        )
-        
-        # Drop duplicate team column
-        if 'team_def' in players.columns:
-            players = players.drop(columns=['team_def'])
+    if def_stats.empty:
+        st.warning("⚠️ No defensive stats available - proceeding without matchup adjustments")
+        return players
     
-    return players
+    # Merge offense with defense
+    def_cols = {
+        'def_pressure_rate': 'opp_pressure_rate',
+        'def_clean_pocket_rate': 'opp_clean_pocket_rate',
+        'def_time_to_throw': 'opp_time_to_throw',
+        'def_separation_allowed': 'opp_separation_allowed',
+        'def_catch_rate_allowed': 'opp_catch_rate_allowed',
+    }
+    
+    valid_cols = {k: v for k, v in def_cols.items() if k in def_stats.columns}
+    def_stats_renamed = def_stats.rename(columns=valid_cols)
+    
+    matchup_df = players.merge(
+        def_stats_renamed[['team'] + list(valid_cols.values())],
+        left_on='opponent_team',
+        right_on='team',
+        how='left',
+        suffixes=('', '_def')
+    )
+    
+    if 'team_def' in matchup_df.columns:
+        matchup_df = matchup_df.drop(columns=['team_def'])
+    
+    st.success(f"✅ Built matchup matrix: {len(matchup_df)} players with defensive context")
+    return matchup_df
