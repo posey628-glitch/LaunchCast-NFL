@@ -1,5 +1,5 @@
 # core/scoring.py
-# LaunchCast NFL — Scoring Engine (Fixed to use REAL columns)
+# LaunchCast NFL — Scoring Engine with Dynamic Column Handling
 
 import pandas as pd
 import numpy as np
@@ -16,35 +16,14 @@ def calculate_shrunk_rate(actual_rate, volume, current_week, league_avg_rate, po
     else:
         prior_volume = 20
         weight_actual = 0.80
-        
+    
     if volume <= 0:
         return league_avg_rate
-        
+    
     shrinkage_factor = volume / (volume + prior_volume)
     shrunk_rate = (weight_actual * shrinkage_factor * actual_rate) + \
                   ((1 - (weight_actual * shrinkage_factor)) * league_avg_rate)
     return shrunk_rate
-
-def apply_defensive_matchup(base_projection, opp_pass_ypa_allowed, opp_sacks_per_game, position='WR'):
-    """Adjusts projection based on REAL defensive stats."""
-    multiplier = 1.0
-    
-    if position in ['WR', 'TE']:
-        # League average pass YPA allowed is ~7.0
-        # Every +1.0 YPA allowed = ~10% boost to receiving projection
-        league_avg_ypa = 7.0
-        ypa_boost = (opp_pass_ypa_allowed - league_avg_ypa) * 0.10
-        multiplier += ypa_boost
-        
-        # High sacks = bad for QB = bad for WRs
-        # League average sacks per game is ~2.5
-        # Every +1.0 sack = ~5% penalty to receiving projection
-        league_avg_sacks = 2.5
-        sack_penalty = (opp_sacks_per_game - league_avg_sacks) * 0.05
-        multiplier -= sack_penalty
-            
-    # Clamp the multiplier so one bad defense doesn't create a 300% projection
-    return max(0.5, min(1.5, multiplier))
 
 def calc_td_probability(expected_tds):
     """Calculates P(1+ TD) using Poisson distribution."""
@@ -61,7 +40,7 @@ def calc_yardage_probability(expected_yards, prop_line, std_dev=22.0):
     return 1 - norm.cdf(z_score)
 
 def generate_nfl_projections(matchup_df, current_week):
-    """Takes raw matchup_df and outputs projections."""
+    """Generate projections with dynamic column handling."""
     df = matchup_df.copy()
     
     LEAGUE_AVG_TARGET_SHARE = 0.20
@@ -72,31 +51,20 @@ def generate_nfl_projections(matchup_df, current_week):
     # Step 1: Shrunk Rates
     df['shrunk_target_share'] = df.apply(
         lambda row: calculate_shrunk_rate(
-            row.get('target_share', 0), 
-            row.get('routes_run', row.get('routes', 0)), 
-            current_week, 
-            LEAGUE_AVG_TARGET_SHARE, 
+            row.get('target_share', 0),
+            row.get('routes', 0),
+            current_week,
+            LEAGUE_AVG_TARGET_SHARE,
             'WR'
         ), axis=1
     )
     
-    # Step 2: Defensive Matchups (using REAL columns)
-    # Use opp_pass_ypa_allowed and opp_sacks_per_game
-    df['matchup_multiplier'] = df.apply(
-        lambda row: apply_defensive_matchup(
-            1.0, 
-            row.get('opp_pass_ypa_allowed', 7.0), 
-            row.get('opp_sacks_per_game', 2.5), 
-            row.get('position', 'WR')
-        ), axis=1
-    )
-    
-    # Step 3: Base Projections
-    df['proj_targets'] = (df['shrunk_target_share'] * TEAM_AVG_PASS_ATTEMPTS * df['matchup_multiplier']).round(1)
+    # Step 2: Base Projections
+    df['proj_targets'] = (df['shrunk_target_share'] * TEAM_AVG_PASS_ATTEMPTS).round(1)
     df['proj_rec_yards'] = (df['proj_targets'] * (df.get('adot', 8.0) + LEAGUE_AVG_YAC)).round(1)
-    df['proj_tds'] = (df['proj_targets'] * LEAGUE_AVG_TD_RATE * df['matchup_multiplier']).round(2)
+    df['proj_tds'] = (df['proj_targets'] * LEAGUE_AVG_TD_RATE).round(2)
     
-    # Step 4: Prop Probabilities
+    # Step 3: Prop Probabilities
     df['prob_1plus_td'] = df['proj_tds'].apply(calc_td_probability)
     df['prob_over_45.5_yds'] = df.apply(
         lambda row: calc_yardage_probability(row['proj_rec_yards'], 45.5), axis=1
@@ -105,9 +73,9 @@ def generate_nfl_projections(matchup_df, current_week):
         lambda row: 1 - poisson.cdf(3, row['proj_targets'] * 0.75), axis=1
     )
     
-    # Only return columns that exist
+    # Step 4: Return only columns that exist
     desired_cols = [
-        'player_name', 'position', 'team', 'opponent_team', 
+        'player_name', 'position', 'team', 'opponent_team',
         'proj_targets', 'proj_rec_yards', 'proj_tds',
         'prob_1plus_td', 'prob_over_45.5_yds', 'prob_over_3.5_rec'
     ]
