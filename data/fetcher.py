@@ -1,6 +1,6 @@
 # data/fetcher.py
-# LaunchCast NFL — Data Fetcher V7.3
-# FIX: Robust cascading fallback for HTTP 404 errors from nfl_data_py
+# LaunchCast NFL — Data Fetcher V7.4
+# FIX: Stamp actual season loaded, resolve_season helper, prevent prior==current leakage
 
 import pandas as pd
 import numpy as np
@@ -21,24 +21,32 @@ else:
 def _load_weekly_raw(year: int) -> pd.DataFrame:
     """
     Load raw weekly data once and cache it.
-    FIX: Automatically falls back to previous years if the requested year returns a 404.
+    FIX: Stamp df.attrs['season_used'] with what actually loaded.
     """
     import nfl_data_py as nfl
     
-    # Try the requested year, then the previous two years as fallbacks
     for y in [year, year - 1, year - 2]:
         try:
             df = nfl.import_weekly_data([y])
             if not df.empty:
                 if y != year:
-                    st.info(f"⚠️ {year} data unavailable, seamlessly falling back to {y}")
+                    st.info(f"⚠️ {year} data unavailable, falling back to {y}")
+                # FIX: Stamp what actually loaded
+                df.attrs['season_used'] = y
                 return df
         except Exception:
-            # Catch 404s and other network errors silently and try the next year
             continue
             
     st.error(f"❌ Failed to load weekly data for {year} and all fallbacks.")
     return pd.DataFrame()
+
+def resolve_season(year: int) -> int:
+    """
+    Returns the actual season that loaded (may differ from requested due to fallback).
+    FIX: Prevents the code from thinking it has 2025 data when it actually has 2024.
+    """
+    df = _load_weekly_raw(year)
+    return df.attrs.get('season_used', year) if not df.empty else year
 
 def normalize_columns(df):
     """Normalize column names from nflverse to our standard names."""
@@ -106,6 +114,10 @@ def load_prior_rates_from_season(season: int) -> pd.DataFrame:
         g['prior_team_pass_att'] = g['prior_team_pass_att'].fillna(35.0)
         
         g = g.drop_duplicates('player_id', keep='first')
+        
+        # FIX: Stamp what season this prior data came from
+        g.attrs['season_used'] = raw.attrs.get('season_used', season)
+        
         return g
     except Exception as e:
         st.warning(f"Prior rates load failed: {e}")
@@ -306,20 +318,30 @@ def get_weekly_player_stats(week: int, year: int = None) -> pd.DataFrame:
         return pd.DataFrame()
 
 def build_matchup_matrix(week: int, year: int = None) -> pd.DataFrame:
-    """Build matchup matrix for LIVE projections."""
+    """
+    Build matchup matrix for LIVE projections.
+    FIX: Resolve actual season and prevent prior==current leakage.
+    """
     if year is None:
         year = PREFERRED_SEASON
     
+    # FIX: Resolve actual season (may differ from requested due to fallback)
+    actual = resolve_season(year)
+    
     prior_rates = None
     if week <= 3:
-        prior_rates = load_prior_rates_from_season(year - 1)
+        prior_rates = load_prior_rates_from_season(actual - 1)
+        # FIX: Check for leakage — if prior season resolved to same as current, disable
+        if resolve_season(actual - 1) == actual:
+            prior_rates = pd.DataFrame()
+            st.warning("⚠️ Prior-season data unavailable — week 1-3 priors DISABLED")
     
-    features = build_features_through(week, year, prior_rates=prior_rates)
+    features = build_features_through(week, actual, prior_rates=prior_rates)
     if features.empty:
         return pd.DataFrame()
     
     try:
-        all_data = _load_weekly_raw(year)
+        all_data = _load_weekly_raw(actual)
         if all_data.empty:
             return pd.DataFrame()
             
@@ -339,7 +361,7 @@ def build_matchup_matrix(week: int, year: int = None) -> pd.DataFrame:
         st.warning(f"Opponent attach failed: {e}")
         return pd.DataFrame()
     
-    def_features = build_defensive_features_through(week, year)
+    def_features = build_defensive_features_through(week, actual)
     
     if not def_features.empty:
         features = features.merge(
