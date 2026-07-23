@@ -1,6 +1,6 @@
 # data/fetcher.py
-# LaunchCast NFL — Data Fetcher V5.3
-# FIXES: .get() fallback alignment, traded player deduplication
+# LaunchCast NFL — Data Fetcher V7
+# ADDS: Last-season priors for early weeks, team-specific pass volume
 
 import pandas as pd
 import numpy as np
@@ -40,10 +40,72 @@ def normalize_columns(df):
         df = df.rename(columns=rename_map)
     return df
 
-def build_features_through(week: int, year: int) -> pd.DataFrame:
+@st.cache_data(ttl=3600)
+def load_prior_rates_from_season(season: int) -> pd.DataFrame:
+    """
+    Load last season's per-player rates to use as priors for early weeks.
+    Returns DataFrame with player_id, player_name, team, position, and rates.
+    """
+    try:
+        raw = _load_weekly_raw(season)
+        raw = normalize_columns(raw)
+        
+        if raw.empty:
+            return pd.DataFrame()
+        
+        # Group keys
+        groupby_cols = ['player_id', 'player_name', 'team']
+        if 'position' in raw.columns:
+            groupby_cols.append('position')
+        
+        # Aggregate full-season stats
+        agg_dict = {
+            'targets': ('targets', 'sum'),
+            'receiving_yards': ('receiving_yards', 'sum'),
+            'receiving_tds': ('receiving_tds', 'sum'),
+        }
+        if 'air_yards' in raw.columns:
+            agg_dict['air_yards'] = ('air_yards', 'sum')
+        if 'routes' in raw.columns:
+            agg_dict['routes'] = ('routes', 'sum')
+        
+        g = raw.groupby(groupby_cols, as_index=False).agg(**agg_dict)
+        
+        # Calculate rates
+        g['prior_yds_per_tgt'] = np.where(g['targets'] > 0, g['receiving_yards'] / g['targets'], 11.0)
+        g['prior_td_per_tgt'] = np.where(g['targets'] > 0, g['receiving_tds'] / g['targets'], 0.05)
+        
+        # Team-level target share from last season
+        g['prior_team_targets'] = g.groupby('team')['targets'].transform('sum')
+        g['prior_target_share'] = np.where(
+            g['prior_team_targets'] > 0,
+            g['targets'] / g['prior_team_targets'],
+            0
+        )
+        
+        # Team-level pass volume from last season (targets per game)
+        team_games = raw.groupby('team')['week'].nunique().reset_index()
+        team_games.columns = ['team', 'team_weeks']
+        team_targets = raw.groupby('team')['targets'].sum().reset_index()
+        team_targets.columns = ['team', 'team_total_targets']
+        team_vol = team_targets.merge(team_games, on='team')
+        team_vol['prior_team_pass_att'] = np.where(
+            team_vol['team_weeks'] > 0,
+            team_vol['team_total_targets'] / team_vol['team_weeks'],
+            35.0
+        )
+        g = g.merge(team_vol[['team', 'prior_team_pass_att']], on='team', how='left')
+        g['prior_team_pass_att'] = g['prior_team_pass_att'].fillna(35.0)
+        
+        return g
+    except Exception as e:
+        st.warning(f"Prior rates load failed: {e}")
+        return pd.DataFrame()
+
+def build_features_through(week: int, year: int, prior_rates: pd.DataFrame = None) -> pd.DataFrame:
     """
     Build season-to-date player rates using ONLY weeks before `week`.
-    Prevents data leakage.
+    For weeks 1-3, blend with last season's rates as priors.
     """
     try:
         raw = _load_weekly_raw(year)
@@ -51,12 +113,9 @@ def build_features_through(week: int, year: int) -> pd.DataFrame:
         
         hist = raw[raw['week'] < week]
         
-        if hist.empty:
-            return pd.DataFrame()
-        
         # Build groupby keys defensively
         groupby_cols = ['player_id', 'player_name', 'team']
-        if 'position' in hist.columns:
+        if 'position' in raw.columns:
             groupby_cols.append('position')
         
         # Build aggregation dict defensively
@@ -65,25 +124,33 @@ def build_features_through(week: int, year: int) -> pd.DataFrame:
             'receiving_yards': ('receiving_yards', 'sum'),
             'receiving_tds': ('receiving_tds', 'sum'),
         }
-        
         if 'air_yards' in hist.columns:
             agg_dict['air_yards'] = ('air_yards', 'sum')
         if 'routes' in hist.columns:
             agg_dict['routes'] = ('routes', 'sum')
         
-        agg_tuples = list(agg_dict.values())
-        agg_names = list(agg_dict.keys())
-        
-        g = hist.groupby(groupby_cols, as_index=False).agg(
-            **{name: spec for name, spec in zip(agg_names, agg_tuples)}
-        )
+        g = hist.groupby(groupby_cols, as_index=False).agg(**agg_dict)
         
         # Games column via merge
         _gm = hist.groupby(groupby_cols, as_index=False)['week'].nunique()
         _gm = _gm.rename(columns={'week': 'games'})
         g = g.merge(_gm, on=groupby_cols, how='left')
         
-        # Calculate rates
+        # Team-level pass volume (current season)
+        team_games_cur = hist.groupby('team')['week'].nunique().reset_index()
+        team_games_cur.columns = ['team', 'team_weeks']
+        team_targets_cur = hist.groupby('team')['targets'].sum().reset_index()
+        team_targets_cur.columns = ['team', 'team_total_targets']
+        team_vol_cur = team_targets_cur.merge(team_games_cur, on='team')
+        team_vol_cur['team_avg_pass_attempts'] = np.where(
+            team_vol_cur['team_weeks'] > 0,
+            team_vol_cur['team_total_targets'] / team_vol_cur['team_weeks'],
+            35.0
+        )
+        g = g.merge(team_vol_cur[['team', 'team_avg_pass_attempts']], on='team', how='left')
+        g['team_avg_pass_attempts'] = g['team_avg_pass_attempts'].fillna(35.0)
+        
+        # Calculate rates from historical data
         g['yds_per_tgt'] = np.where(g['targets'] > 0, g['receiving_yards'] / g['targets'], 11.0)
         g['td_per_tgt'] = np.where(g['targets'] > 0, g['receiving_tds'] / g['targets'], 0.05)
         
@@ -92,7 +159,7 @@ def build_features_through(week: int, year: int) -> pd.DataFrame:
         else:
             g['adot'] = 8.0
         
-        # target_share uses TEAM denominator
+        # Target share uses TEAM denominator
         g['team_targets'] = g.groupby('team')['targets'].transform('sum')
         g['target_share'] = np.where(
             g['team_targets'] > 0,
@@ -100,7 +167,58 @@ def build_features_through(week: int, year: int) -> pd.DataFrame:
             0
         )
         
-        # FIX: Deduplicate traded players — keep the stint with most games
+        # FIX: For weeks 1-3, blend with last season's rates as priors
+        if prior_rates is not None and not prior_rates.empty and week <= 3:
+            # Merge prior rates on player_id
+            prior_cols = ['player_id', 'prior_yds_per_tgt', 'prior_td_per_tgt', 
+                         'prior_target_share', 'prior_team_pass_att', 'targets']
+            prior_cols = [c for c in prior_cols if c in prior_rates.columns]
+            
+            g = g.merge(
+                prior_rates[prior_cols].rename(columns={'targets': 'prior_targets'}),
+                on='player_id',
+                how='left'
+            )
+            
+            # Bayesian blend: current_targets vs prior_targets (strength of prior)
+            # Prior strength = 60 targets (roughly a full-season WR1)
+            prior_strength = 60.0
+            
+            # Blend target_share
+            g['target_share'] = np.where(
+                g['prior_target_share'].notna() & (g['prior_targets'].fillna(0) > 0),
+                (g['targets'].fillna(0) * g['target_share'] + 
+                 prior_strength * g['prior_target_share']) / 
+                (g['targets'].fillna(0) + prior_strength),
+                g['target_share']
+            )
+            
+            # Blend yds_per_tgt
+            g['yds_per_tgt'] = np.where(
+                g['prior_yds_per_tgt'].notna() & (g['prior_targets'].fillna(0) > 0),
+                (g['targets'].fillna(0) * g['yds_per_tgt'] + 
+                 prior_strength * g['prior_yds_per_tgt']) / 
+                (g['targets'].fillna(0) + prior_strength),
+                g['yds_per_tgt']
+            )
+            
+            # Blend td_per_tgt
+            g['td_per_tgt'] = np.where(
+                g['prior_td_per_tgt'].notna() & (g['prior_targets'].fillna(0) > 0),
+                (g['targets'].fillna(0) * g['td_per_tgt'] + 
+                 prior_strength * g['prior_td_per_tgt']) / 
+                (g['targets'].fillna(0) + prior_strength),
+                g['td_per_tgt']
+            )
+            
+            # Use prior team pass attempts if current season has no data yet (Week 1)
+            g['team_avg_pass_attempts'] = np.where(
+                (g['team_weeks'] if 'team_weeks' in g.columns else 0) > 0,
+                g['team_avg_pass_attempts'],
+                g['prior_team_pass_att'].fillna(35.0)
+            )
+        
+        # Deduplicate traded players
         g = g.sort_values('games', ascending=False).drop_duplicates('player_id', keep='first')
         
         return g
@@ -109,10 +227,7 @@ def build_features_through(week: int, year: int) -> pd.DataFrame:
         return pd.DataFrame()
 
 def build_defensive_features_through(week: int, year: int) -> pd.DataFrame:
-    """
-    Build season-to-date defensive stats using ONLY weeks before `week`.
-    Column-hardened to prevent silent failures.
-    """
+    """Build season-to-date defensive stats using ONLY weeks before `week`."""
     try:
         raw = _load_weekly_raw(year)
         raw = normalize_columns(raw)
@@ -133,7 +248,6 @@ def build_defensive_features_through(week: int, year: int) -> pd.DataFrame:
         if 'receiving_tds' in hist.columns:
             spec['tds_allowed'] = ('receiving_tds', 'sum')
         
-        # Explicit warning if critical columns missing
         if 'targets_allowed' not in spec or 'tds_allowed' not in spec:
             st.warning("⚠️ Defensive features unavailable — matchup adjustment is OFF this run")
             return pd.DataFrame()
@@ -141,7 +255,6 @@ def build_defensive_features_through(week: int, year: int) -> pd.DataFrame:
         def_agg = hist.groupby(['opponent_team'], as_index=False).agg(**spec)
         def_agg = def_agg.rename(columns={'opponent_team': 'team'})
         
-        # FIX: Handle optional columns explicitly — no .get() with Series([0])
         _ta = def_agg['targets_allowed']
         
         if 'yards_allowed' in def_agg.columns:
@@ -175,14 +288,16 @@ def get_weekly_player_stats(week: int, year: int = None) -> pd.DataFrame:
         return pd.DataFrame()
 
 def build_matchup_matrix(week: int, year: int = None) -> pd.DataFrame:
-    """
-    Build matchup matrix for LIVE projections.
-    Attach opponent FIRST, then merge defense on opponent_team.
-    """
+    """Build matchup matrix for LIVE projections."""
     if year is None:
         year = PREFERRED_SEASON
     
-    features = build_features_through(week, year)
+    # FIX: Load prior rates for early weeks
+    prior_rates = None
+    if week <= 3:
+        prior_rates = load_prior_rates_from_season(year - 1)
+    
+    features = build_features_through(week, year, prior_rates=prior_rates)
     if features.empty:
         return pd.DataFrame()
     
