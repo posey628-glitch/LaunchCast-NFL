@@ -1,5 +1,5 @@
 # app.py
-# LaunchCast NFL — V2 UI (Matches MLB App Architecture)
+# LaunchCast NFL — V2 UI (Matches MLB App Architecture with Sidebar Owner Login)
 
 import streamlit as st
 import pandas as pd
@@ -41,24 +41,39 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ============================================================================
-# 2. OWNER MODE (Ported from MLB App)
+# 2. OWNER MODE (Sidebar Login - No URL editing required)
 # ============================================================================
-OWNER_KEY = "Posey628628!" # CHANGE THIS to your own secret passphrase
+OWNER_KEY = "Posey628628!"
 
-owner_mode = False
-if st.session_state.get("_owner_verified"):
-    owner_mode = True
+# Check if already verified in this session
+owner_mode = st.session_state.get("_owner_verified", False)
 
-try:
-    qp = st.query_params
-    url_key = qp.get("owner", "")
-    if isinstance(url_key, list):
-        url_key = url_key[0] if url_key else ""
-    if url_key and OWNER_KEY and url_key == OWNER_KEY:
-        owner_mode = True
+# If not verified, show sidebar login
+if not owner_mode:
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 🔒 Owner Access")
+    owner_input = st.sidebar.text_input("Enter Secret Key", type="password", key="owner_key_input")
+    
+    if owner_input == OWNER_KEY:
         st.session_state["_owner_verified"] = True
-except Exception:
-    pass
+        owner_mode = True
+        st.rerun() # Refresh the app to unlock the tab
+    elif owner_input:
+        st.sidebar.error("❌ Incorrect key")
+
+# Also support URL parameter as a backup
+if not owner_mode:
+    try:
+        qp = st.query_params
+        url_key = qp.get("owner", "")
+        if isinstance(url_key, list):
+            url_key = url_key[0] if url_key else ""
+        if url_key and url_key == OWNER_KEY:
+            st.session_state["_owner_verified"] = True
+            owner_mode = True
+            st.rerun()
+    except Exception:
+        pass
 
 # ============================================================================
 # 3. APP CONFIG & DATA LOAD
@@ -101,7 +116,7 @@ if error:
 # ============================================================================
 # 4. MAIN UI TABS
 # ============================================================================
-tab_main, tab_games, tab_owner = st.tabs(["🎯 Projections", " Game Browser", "🔒 Owner Tools"])
+tab_main, tab_games, tab_owner = st.tabs(["🎯 Projections", "🎮 Game Browser", "🔒 Owner Tools"])
 
 with tab_main:
     render_nfl_dashboard(projections, IS_OFFSEASON, DISPLAY_YEAR)
@@ -113,7 +128,7 @@ with tab_owner:
     if not owner_mode:
         st.markdown("### 🔒 Owner Access Required")
         st.caption("This section contains backtesting, pattern analysis, and internal diagnostics.")
-        st.info(f"To unlock, add `?owner={OWNER_KEY}` to the end of your app URL.")
+        st.info("Enter your secret key in the sidebar to unlock this tab.")
     else:
         st.subheader("📈 2024 Season Backtest")
         if st.button("Run Full Backtest", type="primary"):
