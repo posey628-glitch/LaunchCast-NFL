@@ -1,6 +1,7 @@
 # core/backtest.py
-# LaunchCast NFL — Backtesting Engine V7.2
-# FIX: Replace stale team with current team from week N
+# LaunchCast NFL — Backtesting Engine V8
+# ADDS: Yardage edge metrics (Top20 Yds Hit %, Yds Edge pp, Yds Lift)
+# FIX: Stale team replacement, Week 1 support
 
 import pandas as pd
 import numpy as np
@@ -15,21 +16,25 @@ from data.fetcher import (
 from core.scoring import generate_nfl_projections
 
 def run_nfl_backtest(season=2025, max_weeks=18):
-    """Runs the scoring engine on historical data and grades it."""
+    """
+    Runs the scoring engine on historical data and grades it.
+    Includes edge metrics for BOTH TD and Yardage props.
+    """
     results = []
     
+    # Load prior rates once for early weeks
     prior_rates = load_prior_rates_from_season(season - 1)
     
     for week in range(1, max_weeks + 1):
         try:
+            # Build features (with prior rates for weeks 1-3)
             features = build_features_through(week, season, prior_rates=prior_rates if week <= 3 else None)
             if features.empty:
                 continue
             
+            # Attach current team AND opponent from week N
             all_data = _load_weekly_raw(season)
             all_data = normalize_columns(all_data)
-            
-            # FIX: Get current team AND opponent from week N
             week_n = all_data[all_data['week'] == week][
                 ['player_id', 'team', 'opponent_team']
             ].drop_duplicates('player_id')
@@ -37,7 +42,7 @@ def run_nfl_backtest(season=2025, max_weeks=18):
             if week_n.empty:
                 continue
             
-            # FIX: Drop stale team from features, merge current team from week N
+            # Drop stale team from features, merge current team from week N
             if 'team' in features.columns:
                 features = features.drop(columns=['team'])
             
@@ -45,6 +50,7 @@ def run_nfl_backtest(season=2025, max_weeks=18):
             if features.empty:
                 continue
             
+            # Attach defense
             def_features = build_defensive_features_through(week, season)
             if not def_features.empty:
                 features = features.merge(
@@ -54,46 +60,68 @@ def run_nfl_backtest(season=2025, max_weeks=18):
                     how='left'
                 )
             
+            # Generate projections
             projections = generate_nfl_projections(features, current_week=week)
             if projections.empty:
                 continue
             
+            # Get actuals
             actuals = get_weekly_player_stats(week, season)
             if actuals.empty:
                 continue
             
-            actuals = actuals[['player_id', 'player_name', 'team', 'receiving_tds', 'receiving_yards', 'receptions']].copy()
+            actuals = actuals[['player_id', 'player_name', 'team', 
+                              'receiving_tds', 'receiving_yards', 'receptions']].copy()
             actuals = actuals.rename(columns={
                 'receiving_tds': 'actual_tds',
                 'receiving_yards': 'actual_yards',
                 'receptions': 'actual_rec'
             }).fillna(0)
             
-            test_df = projections.merge(actuals, on=['player_id', 'player_name', 'team'], how='inner', suffixes=('', '_actual'))
+            test_df = projections.merge(
+                actuals, 
+                on=['player_id', 'player_name', 'team'], 
+                how='inner', 
+                suffixes=('', '_actual')
+            )
             
+            # Calculate hits
             test_df['hit_td'] = (test_df['actual_tds'] >= 1).astype(int)
             test_df['hit_yards'] = (test_df['actual_yards'] > 45.5).astype(int)
             
+            # Calculate Brier scores
             test_df['brier_td'] = (test_df['prob_1plus_td'] - test_df['hit_td']) ** 2
             test_df['brier_yards'] = (test_df['prob_over_45.5_yds'] - test_df['hit_yards']) ** 2
             
-            test_df_sorted = test_df.sort_values('prob_1plus_td', ascending=False)
-            top20 = test_df_sorted.head(20)
-            base_rate = test_df['hit_td'].mean()
-            top20_rate = top20['hit_td'].mean()
+            # === EDGE METRICS: TD ===
+            test_df_sorted_td = test_df.sort_values('prob_1plus_td', ascending=False)
+            top20_td = test_df_sorted_td.head(20)
+            base_rate_td = test_df['hit_td'].mean()
+            top20_rate_td = top20_td['hit_td'].mean()
+            
+            # === EDGE METRICS: YARDAGE (NEW) ===
+            test_df_sorted_yds = test_df.sort_values('prob_over_45.5_yds', ascending=False)
+            top20_yds = test_df_sorted_yds.head(20)
+            base_rate_yds = test_df['hit_yards'].mean()
+            top20_rate_yds = top20_yds['hit_yards'].mean()
             
             results.append({
                 'Week': week,
                 'Players': len(test_df),
+                # TD metrics
                 'Avg Brier (TD)': round(test_df['brier_td'].mean(), 4),
                 'Hit Rate (TD)': round(test_df['hit_td'].mean() * 100, 1),
                 'Avg Prob (TD)': round(test_df['prob_1plus_td'].mean() * 100, 1),
+                'Top20 TD Hit %': round(top20_rate_td * 100, 1),
+                'TD Edge (pp)': round((top20_rate_td - base_rate_td) * 100, 1),
+                'TD Lift': round(top20_rate_td / base_rate_td, 2) if base_rate_td > 0 else None,
+                # Yardage metrics
                 'Avg Brier (Yds)': round(test_df['brier_yards'].mean(), 4),
                 'Hit Rate (Yds)': round(test_df['hit_yards'].mean() * 100, 1),
-                'Top20 Hit %': round(top20_rate * 100, 1),
-                'Slate Base %': round(base_rate * 100, 1),
-                'Edge (pp)': round((top20_rate - base_rate) * 100, 1),
-                'Lift': round(top20_rate / base_rate, 2) if base_rate > 0 else None,
+                'Avg Prob (Yds)': round(test_df['prob_over_45.5_yds'].mean() * 100, 1),
+                'Top20 Yds Hit %': round(top20_rate_yds * 100, 1),
+                'Yds Edge (pp)': round((top20_rate_yds - base_rate_yds) * 100, 1),
+                'Yds Lift': round(top20_rate_yds / base_rate_yds, 2) if base_rate_yds > 0 else None,
             })
         except Exception as e:
             continue
@@ -101,13 +129,18 @@ def run_nfl_backtest(season=2025, max_weeks=18):
     return pd.DataFrame(results)
 
 def generate_nfl_backtest_copy_text(results_df):
-    """Generates a clean, copy-pasteable text report."""
+    """Generates a clean, copy-pasteable text report with both TD and Yardage edge."""
     if results_df.empty:
         return "No backtest data available."
     
     lines = []
     lines.append("🏈 LAUNCHCAST NFL — BACKTEST REPORT")
-    lines.append("=" * 40)
+    lines.append("=" * 50)
+    
+    # === TD SUMMARY ===
+    lines.append("")
+    lines.append("🎯 TOUCHDOWN PROPS")
+    lines.append("-" * 50)
     
     avg_brier = results_df['Avg Brier (TD)'].mean()
     avg_hit = results_df['Hit Rate (TD)'].mean()
@@ -117,56 +150,98 @@ def generate_nfl_backtest_copy_text(results_df):
     lines.append(f"Overall Hit Rate (TD):  {avg_hit:.1f}%")
     lines.append(f"Overall Avg Prob (TD):  {avg_prob:.1f}%")
     
-    if 'Top20 Hit %' in results_df.columns:
-        avg_top20 = results_df['Top20 Hit %'].mean()
-        avg_base = results_df['Slate Base %'].mean()
-        avg_edge = results_df['Edge (pp)'].mean()
-        avg_lift = results_df['Lift'].mean()
+    if 'Top20 TD Hit %' in results_df.columns:
+        avg_top20_td = results_df['Top20 TD Hit %'].mean()
+        avg_edge_td = results_df['TD Edge (pp)'].mean()
+        avg_lift_td = results_df['TD Lift'].mean()
         
         lines.append("")
-        lines.append("🎯 EDGE METRICS")
-        lines.append("-" * 40)
-        lines.append(f"Top-20 Hit Rate:      {avg_top20:.1f}%")
-        lines.append(f"Slate Base Rate:      {avg_base:.1f}%")
-        lines.append(f"Edge:                 {avg_edge:+.1f}pp")
-        lines.append(f"Lift:                 {avg_lift:.2f}x")
-        lines.append("")
-        lines.append("Interpretation:")
-        if avg_edge >= 10:
-            lines.append("✅ STRONG EDGE — Top picks hit significantly more than baseline")
-        elif avg_edge >= 5:
+        lines.append("TD EDGE METRICS")
+        lines.append(f"Top-20 Hit Rate:      {avg_top20_td:.1f}%")
+        lines.append(f"Slate Base Rate:      {avg_hit:.1f}%")
+        lines.append(f"Edge:                 {avg_edge_td:+.1f}pp")
+        lines.append(f"Lift:                 {avg_lift_td:.2f}x")
+        
+        if avg_edge_td >= 10:
+            lines.append("✅ STRONG EDGE — Top TD picks hit significantly more than baseline")
+        elif avg_edge_td >= 5:
             lines.append("🟡 MODEST EDGE — Some signal, but needs refinement")
         else:
-            lines.append("⚠️ WEAK EDGE — Model is calibrated but not discriminating")
+            lines.append("⚠️ WEAK EDGE — TD model is calibrated but not discriminating")
     
-    lines.append("")
-    lines.append("📊 WEEKLY BREAKDOWN")
-    lines.append("-" * 40)
-    
-    header = f"{'Week':<4} | {'Players':>7} | {'Brier':>5} | {'Hit %':>5} | {'Prob %':>6} | {'Top20':>5} | {'Edge':>5}"
-    lines.append(header)
-    lines.append("-" * 40)
-    
-    for _, row in results_df.iterrows():
-        line = (f"{int(row['Week']):<4} | {int(row['Players']):>7} | "
-                f"{row['Avg Brier (TD)']:.4f} | {row['Hit Rate (TD)']:>5.1f} | "
-                f"{row['Avg Prob (TD)']:>6.1f} | {row.get('Top20 Hit %', 0):>5.1f} | "
-                f"{row.get('Edge (pp)', 0):>+5.1f}")
-        lines.append(line)
+    # === YARDAGE SUMMARY (NEW) ===
+    if 'Top20 Yds Hit %' in results_df.columns:
+        lines.append("")
+        lines.append("📏 YARDAGE PROPS (Over 45.5)")
+        lines.append("-" * 50)
         
-    lines.append("-" * 40)
-    
-    if len(results_df) > 0:
-        best_week = results_df.loc[results_df['Avg Brier (TD)'].idxmin()]
-        worst_week = results_df.loc[results_df['Avg Brier (TD)'].idxmax()]
+        avg_brier_yds = results_df['Avg Brier (Yds)'].mean()
+        avg_hit_yds = results_df['Hit Rate (Yds)'].mean()
+        avg_prob_yds = results_df['Avg Prob (Yds)'].mean()
+        
+        lines.append(f"Overall Avg Brier (Yds): {avg_brier_yds:.4f}")
+        lines.append(f"Overall Hit Rate (Yds):  {avg_hit_yds:.1f}%")
+        lines.append(f"Overall Avg Prob (Yds):  {avg_prob_yds:.1f}%")
+        
+        avg_top20_yds = results_df['Top20 Yds Hit %'].mean()
+        avg_edge_yds = results_df['Yds Edge (pp)'].mean()
+        avg_lift_yds = results_df['Yds Lift'].mean()
         
         lines.append("")
-        lines.append("🔍 KEY INSIGHTS")
-        lines.append(f"• Best Calibrated Week: Week {int(best_week['Week'])} (Brier: {best_week['Avg Brier (TD)']:.4f})")
-        lines.append(f"• Worst Calibrated Week: Week {int(worst_week['Week'])} (Brier: {worst_week['Avg Brier (TD)']:.4f})")
+        lines.append("YARDAGE EDGE METRICS")
+        lines.append(f"Top-20 Hit Rate:      {avg_top20_yds:.1f}%")
+        lines.append(f"Slate Base Rate:      {avg_hit_yds:.1f}%")
+        lines.append(f"Edge:                 {avg_edge_yds:+.1f}pp")
+        lines.append(f"Lift:                 {avg_lift_yds:.2f}x")
         
-        if 'Edge (pp)' in results_df.columns:
-            best_edge_week = results_df.loc[results_df['Edge (pp)'].idxmax()]
-            lines.append(f"• Best Edge Week: Week {int(best_edge_week['Week'])} (Edge: {best_edge_week['Edge (pp)']:+.1f}pp)")
+        if avg_edge_yds >= 10:
+            lines.append("✅ STRONG EDGE — Top yardage picks hit significantly more than baseline")
+        elif avg_edge_yds >= 5:
+            lines.append("🟡 MODEST EDGE — Some yardage signal, but needs refinement")
+        else:
+            lines.append("⚠️ WEAK EDGE — Yardage model is calibrated but not discriminating")
+    
+    # === WEEKLY BREAKDOWN ===
+    lines.append("")
+    lines.append("📊 WEEKLY BREAKDOWN")
+    lines.append("-" * 50)
+    
+    header = (f"{'Wk':<3} | {'N':>4} | "
+              f"{'BrierTD':>7} | {'Hit%':>5} | {'Prob%':>5} | {'TD Edge':>7} | "
+              f"{'BrierYd':>7} | {'YHit%':>5} | {'YProb%':>6} | {'Yd Edge':>7}")
+    lines.append(header)
+    lines.append("-" * 50)
+    
+    for _, row in results_df.iterrows():
+        line = (f"{int(row['Week']):<3} | {int(row['Players']):>4} | "
+                f"{row['Avg Brier (TD)']:.4f} | {row['Hit Rate (TD)']:>5.1f} | "
+                f"{row['Avg Prob (TD)']:>5.1f} | {row.get('TD Edge (pp)', 0):>+7.1f} | "
+                f"{row['Avg Brier (Yds)']:.4f} | {row['Hit Rate (Yds)']:>5.1f} | "
+                f"{row['Avg Prob (Yds)']:>6.1f} | {row.get('Yds Edge (pp)', 0):>+7.1f}")
+        lines.append(line)
+        
+    lines.append("-" * 50)
+    
+    # === KEY INSIGHTS ===
+    if len(results_df) > 0:
+        lines.append("")
+        lines.append("🔍 KEY INSIGHTS")
+        lines.append("-" * 50)
+        
+        best_td_week = results_df.loc[results_df['Avg Brier (TD)'].idxmin()]
+        worst_td_week = results_df.loc[results_df['Avg Brier (TD)'].idxmax()]
+        
+        lines.append(f"• Best TD Calibration:  Week {int(best_td_week['Week'])} (Brier: {best_td_week['Avg Brier (TD)']:.4f})")
+        lines.append(f"• Worst TD Calibration: Week {int(worst_td_week['Week'])} (Brier: {worst_td_week['Avg Brier (TD)']:.4f})")
+        
+        if 'TD Edge (pp)' in results_df.columns:
+            best_td_edge = results_df.loc[results_df['TD Edge (pp)'].idxmax()]
+            worst_td_edge = results_df.loc[results_df['TD Edge (pp)'].idxmin()]
+            lines.append(f"• Best TD Edge:         Week {int(best_td_edge['Week'])} ({best_td_edge['TD Edge (pp)']:+.1f}pp)")
+            lines.append(f"• Worst TD Edge:        Week {int(worst_td_edge['Week'])} ({worst_td_edge['TD Edge (pp)']:+.1f}pp)")
+        
+        if 'Yds Edge (pp)' in results_df.columns:
+            best_yds_edge = results_df.loc[results_df['Yds Edge (pp)'].idxmax()]
+            lines.append(f"• Best Yardage Edge:    Week {int(best_yds_edge['Week'])} ({best_yds_edge['Yds Edge (pp)']:+.1f}pp)")
     
     return "\n".join(lines)
