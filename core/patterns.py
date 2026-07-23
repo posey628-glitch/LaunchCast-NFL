@@ -1,14 +1,16 @@
 # core/patterns.py
-# LaunchCast NFL — Pattern Analysis Engine V8.1
-# FIX: abs() bug in get_proposed_weights — negative correlations should get 0 weight, not positive
+# LaunchCast NFL — Pattern Analysis Engine V7.4
+# FIX: Resolve actual season, prevent prior==current leakage, return actual season
 
 import pandas as pd
 import numpy as np
+import streamlit as st
 from data.fetcher import (
     build_features_through, 
     build_defensive_features_through, 
     get_weekly_player_stats,
     load_prior_rates_from_season,
+    resolve_season,
     _load_weekly_raw,
     normalize_columns
 )
@@ -24,18 +26,35 @@ TRACKED_FEATURES = [
 ]
 
 def run_pattern_analysis(season=2025, max_weeks=18):
-    """Analyze which features correlate with actual TD hits."""
+    """
+    Analyze which features correlate with actual TD hits.
+    FIX: Resolve actual season and prevent prior==current leakage.
+    Returns (summary_df, actual_season) tuple.
+    """
     correlations = []
     
-    prior_rates = load_prior_rates_from_season(season - 1)
+    # FIX: Resolve actual season ONCE at the top
+    actual = resolve_season(season)
+    if actual != season:
+        st.info(f"ℹ️ Pattern analysis running on {actual} data (requested {season})")
+    
+    # FIX: Load priors with leakage check
+    prior_rates = load_prior_rates_from_season(actual - 1)
+    if resolve_season(actual - 1) == actual:
+        prior_rates = pd.DataFrame()
+        st.warning("⚠️ Prior-season data unavailable — week 1-3 priors DISABLED")
     
     for week in range(1, max_weeks + 1):
         try:
-            features = build_features_through(week, season, prior_rates=prior_rates if week <= 3 else None)
+            # Use actual season throughout
+            features = build_features_through(week, actual, prior_rates=prior_rates if week <= 3 else None)
             if features.empty:
                 continue
             
-            all_data = _load_weekly_raw(season)
+            all_data = _load_weekly_raw(actual)
+            if all_data.empty:
+                continue
+                
             all_data = normalize_columns(all_data)
             week_n = all_data[all_data['week'] == week][
                 ['player_id', 'team', 'opponent_team']
@@ -51,7 +70,7 @@ def run_pattern_analysis(season=2025, max_weeks=18):
             if features.empty:
                 continue
             
-            def_features = build_defensive_features_through(week, season)
+            def_features = build_defensive_features_through(week, actual)
             if not def_features.empty:
                 features = features.merge(
                     def_features[['team', 'def_yds_per_tgt', 'def_td_per_tgt']]
@@ -64,7 +83,7 @@ def run_pattern_analysis(season=2025, max_weeks=18):
             if projections.empty:
                 continue
             
-            actuals = get_weekly_player_stats(week, season)
+            actuals = get_weekly_player_stats(week, actual)
             if actuals.empty:
                 continue
             
@@ -89,7 +108,7 @@ def run_pattern_analysis(season=2025, max_weeks=18):
             continue
     
     if not correlations:
-        return pd.DataFrame()
+        return pd.DataFrame(), actual
     
     corr_df = pd.DataFrame(correlations)
     
@@ -103,27 +122,22 @@ def run_pattern_analysis(season=2025, max_weeks=18):
     summary['Abs Correlation'] = summary['Avg Correlation'].abs()
     summary = summary.sort_values('Abs Correlation', ascending=False)
     
-    return summary[['Feature', 'Avg Correlation', 'Std Dev', 'Weeks Sampled']]
+    # FIX: Return tuple with actual season
+    return summary[['Feature', 'Avg Correlation', 'Std Dev', 'Weeks Sampled']], actual
 
 def get_proposed_weights(pattern_results, min_weeks=5):
     """
     Derive target weights proportionally from evidence, then half-step toward them.
-    
-    FIX: The abs() bug threw away sign information. A feature with correlation -0.105
-    (higher YPT = fewer TDs) was treated as positive evidence. Now:
-    - Negative correlations get 0 weight (they're anti-predictors)
-    - Only positive correlations contribute to the weight pool
+    Negative correlations get 0 weight (they're anti-predictors).
     """
     if pattern_results.empty:
         return None
     
-    # Build evidence map: correlation (NOT abs) for each BOOM_WEIGHTS feature
     ev = {}
     for _, r in pattern_results.iterrows():
         feat = r['Feature']
         if feat in BOOM_WEIGHTS and r['Weeks Sampled'] >= min_weeks:
             corr = r['Avg Correlation']
-            # FIX: Negative correlations get 0 weight
             if corr < -0.03:
                 ev[feat] = 0.0
             else:
