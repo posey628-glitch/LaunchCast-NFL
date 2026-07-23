@@ -1,12 +1,11 @@
 # app.py
-# LaunchCast NFL — V8.2
-# FIX: Pass DISPLAY_YEAR to generate_nfl_backtest_copy_text
-# FIX: Add copy button for pattern analysis
+# LaunchCast NFL — V7.4
+# FIX: Handle tuple returns from backtest/patterns, pass actual season to copy text
 
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-from data.fetcher import build_matchup_matrix
+from data.fetcher import build_matchup_matrix, resolve_season
 from core.scoring import generate_nfl_projections
 from core.backtest import run_nfl_backtest, generate_nfl_backtest_copy_text
 from core.patterns import run_pattern_analysis, get_proposed_weights
@@ -90,9 +89,15 @@ else:
     DEFAULT_WEEK = 1
     IS_OFFSEASON = False
 
+# FIX: Resolve actual season for display
+ACTUAL_SEASON = resolve_season(DISPLAY_YEAR)
+
 st.sidebar.title("🏈 LaunchCast NFL")
 if IS_OFFSEASON:
-    st.sidebar.warning(f"⚠️ **NFL Offseason**\n\nShowing {DISPLAY_YEAR} season data for testing.")
+    if ACTUAL_SEASON != DISPLAY_YEAR:
+        st.sidebar.warning(f"⚠️ **NFL Offseason**\n\n{DISPLAY_YEAR} unavailable, using {ACTUAL_SEASON} data.")
+    else:
+        st.sidebar.warning(f"⚠️ **NFL Offseason**\n\nShowing {ACTUAL_SEASON} season data for testing.")
 
 week_selector = st.sidebar.number_input("Select Week", min_value=1, max_value=18, value=DEFAULT_WEEK)
 
@@ -123,7 +128,7 @@ tab_main, tab_games, tab_patterns, tab_owner = st.tabs([
 ])
 
 with tab_main:
-    render_nfl_dashboard(projections, IS_OFFSEASON, DISPLAY_YEAR)
+    render_nfl_dashboard(projections, IS_OFFSEASON, ACTUAL_SEASON)
 
 with tab_games:
     render_game_browser(projections)
@@ -134,15 +139,16 @@ with tab_patterns:
     
     if st.button("Run Pattern Analysis", type="primary"):
         with st.spinner("Analyzing patterns..."):
-            pattern_results = run_pattern_analysis(season=DISPLAY_YEAR, max_weeks=18)
+            # FIX: Handle tuple return
+            pattern_results, actual_season = run_pattern_analysis(season=DISPLAY_YEAR, max_weeks=18)
             
             if pattern_results is not None and not pattern_results.empty:
                 st.subheader("📊 Feature Correlations with TD Hits")
                 st.dataframe(pattern_results, hide_index=True, use_container_width=True)
                 
-                # FIX: Add copy button for pattern analysis
+                # Copy button with ACTUAL season
                 lines = [f"🧠 LAUNCHCAST NFL — PATTERN ANALYSIS",
-                         f"Season: {DISPLAY_YEAR} | Weeks: {int(pattern_results['Weeks Sampled'].max())}",
+                         f"Season: {actual_season} | Weeks: {int(pattern_results['Weeks Sampled'].max())}",
                          "", f"{'Feature':<26}{'Corr':>8}{'StdDev':>9}{'Weeks':>7}", "-"*50]
                 for _, r in pattern_results.iterrows():
                     lines.append(f"{r['Feature']:<26}{r['Avg Correlation']:>+8.3f}"
@@ -168,7 +174,9 @@ with tab_owner:
         st.subheader("📈 Backtest")
         if st.button("Run Full Backtest", type="primary"):
             with st.spinner("Processing historical data..."):
-                backtest_results = run_nfl_backtest(season=DISPLAY_YEAR, max_weeks=18)
+                # FIX: Handle tuple return
+                backtest_results, actual_season = run_nfl_backtest(season=DISPLAY_YEAR, max_weeks=18)
+                
                 if not backtest_results.empty:
                     st.dataframe(backtest_results, hide_index=True, use_container_width=True)
                     
@@ -182,8 +190,8 @@ with tab_owner:
                         
                     st.divider()
                     st.subheader("📋 Copy Report")
-                    # FIX: Pass DISPLAY_YEAR to the copy text generator
-                    copy_text = generate_nfl_backtest_copy_text(backtest_results, season=DISPLAY_YEAR)
+                    # FIX: Pass ACTUAL season to copy text generator
+                    copy_text = generate_nfl_backtest_copy_text(backtest_results, season=actual_season)
                     st.code(copy_text, language="text")
                 else:
                     st.error("Backtest failed.")
