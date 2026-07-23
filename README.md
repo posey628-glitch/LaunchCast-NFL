@@ -7,10 +7,14 @@ shrinkage, and a backtest that grades itself honestly.
 
 | Prop | Top-20 hit rate | Slate base rate | Edge | Lift |
 |---|---|---|---|---|
-| Anytime TD | 30.6% | 13.9% | **+16.7pp** | 2.19× |
+| Anytime TD | 32.8% | 13.9% | **+18.9pp** | 2.34× |
 | Receiving yards (o45.5) | 66.4% | 19.9% | **+46.5pp** | 3.35× |
 
-Calibration: predicted 14.5% vs actual 13.9% on touchdowns (0.6pp gap).
+Calibration: predicted 15.4% vs actual 13.9% on touchdowns (1.5pp gap).
+Brier 0.1139 vs a flat-guess reference of 0.1195.
+
+Config: `DEF_BLEND=0.0`, `PRIOR_TD_RATE=120`. **This is locked — see
+"Tuning is closed" below before changing either.**
 
 ---
 
@@ -86,10 +90,11 @@ boom_score          → td_spike flag (display only)
 produces a byte-identical backtest — this was confirmed empirically. The knobs
 that actually move results live at the top of `core/scoring.py`:
 
-- **`DEF_BLEND`** — how much opponent defense enters the TD rate. Evidence says
-  `def_td_per_tgt` correlates **+0.003** with scoring (nothing), so 40% of the
-  rate is currently being diluted by noise. Try 0.2 and 0.0; keep whichever
-  wins on edge.
+- **`DEF_BLEND` = 0.0** — ABLATION COMPLETE. `def_td_per_tgt` correlates
+  **+0.003** with scoring, and removing the defensive blend entirely did not
+  hurt (edge +17.2 → +17.8pp, statistically tied). Season-long defense-allowed
+  rates measure nothing for touchdowns. **Do not re-add this** without a
+  genuinely better matchup feature (see red-zone note below).
 - **shrinkage priors** — raw `target_share` (+0.283) still outperforms
   `shrunk_target_share` (+0.228), so the priors may still be too strong. Tune
   until shrunk beats raw.
@@ -107,6 +112,33 @@ was live, Week 1's edge read +19.7pp; with it fixed, the honest number is
 that, never the one that was requested.
 
 ---
+
+## Tuning is closed (until 2025 arrives)
+
+Three configuration changes were made against the same 18 weeks of 2024:
+
+| Configuration | Edge | Top-20 hits |
+|---|---|---|
+| `DEF_BLEND 0.4, prior 90` | +17.2pp | 112 / 360 |
+| `DEF_BLEND 0.0, prior 90` | +17.8pp | 114 / 360 |
+| `DEF_BLEND 0.0, prior 120` | **+18.9pp** | 118 / 360 |
+
+Total drift **+1.7pp** — and first vs. last is **not statistically
+significant** (z = 0.49, p = 0.62). Six extra hits out of 360.
+
+Each change was defensible on principle: remove a feature measured at zero,
+then restore the shrinkage that removal cost. Neither was justified by the
+number alone. **A third change justified only by "edge went up" would be
+overfitting** — the drift is already indistinguishable from noise, and there
+is no alarm that fires when you cross from modelling into curve-fitting.
+
+The 2025 season is the only untouched holdout. Its entire value is that the
+model has never seen it, and that value is spent the moment you tune past
+what the evidence supports. **Do not turn another knob against 2024.**
+
+When 2025 publishes, run it once:
+- **Edge +15–19pp** → the model generalises. It is a real tool.
+- **Edge +5–8pp** → 2024's noise was fitted, and now you know by how much.
 
 ## How the model works
 
@@ -151,8 +183,6 @@ Correlates every tracked feature against actual outcomes, week by week.
 
 ## Open work
 
-- **Run the `DEF_BLEND` ablation** (0.4 → 0.2 → 0.0). Highest-value experiment
-  available.
 - **Validate on 2025** once nflverse publishes it. The model was tuned on 2024,
   so 2025 is a clean holdout — run it *once*, untouched. Edge near +15pp means
   it generalizes; a collapse means overfitting.
