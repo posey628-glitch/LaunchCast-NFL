@@ -1,6 +1,6 @@
 # core/patterns.py
-# LaunchCast NFL — Pattern Analysis Engine V7
-# FIX: Use prior rates for early weeks, consistent with backtest
+# LaunchCast NFL — Pattern Analysis Engine V7.1
+# FIX: Track both raw and shrunk versions to test shrinkage effectiveness
 
 import pandas as pd
 import numpy as np
@@ -14,15 +14,15 @@ from data.fetcher import (
 )
 from core.scoring import generate_nfl_projections, BOOM_WEIGHTS
 
+# FIX: Track both raw and shrunk versions
+# This directly answers "is my shrinkage helping or hurting?"
 TRACKED_FEATURES = [
-    'target_share',
-    'yds_per_tgt', 
-    'td_per_tgt',
-    'adot',
-    'routes',
-    'boom_score',
-    'def_yds_per_tgt',
-    'def_td_per_tgt',
+    'target_share', 'shrunk_target_share',
+    'yds_per_tgt', 'shrunk_yds_per_tgt',
+    'td_per_tgt', 'shrunk_td_per_tgt',
+    'adot', 'routes', 'boom_score',
+    'def_yds_per_tgt', 'def_td_per_tgt',
+    'proj_targets', 'team_avg_pass_attempts',
 ]
 
 def run_pattern_analysis(season=2025, max_weeks=18):
@@ -32,7 +32,8 @@ def run_pattern_analysis(season=2025, max_weeks=18):
     # Load prior rates once for early weeks
     prior_rates = load_prior_rates_from_season(season - 1)
     
-    for week in range(2, max_weeks + 1):
+    # Start at week 1 (now that it works)
+    for week in range(1, max_weeks + 1):
         try:
             # Build features (with prior rates for weeks 1-3)
             features = build_features_through(week, season, prior_rates=prior_rates if week <= 3 else None)
