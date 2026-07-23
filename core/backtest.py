@@ -1,32 +1,51 @@
 # core/backtest.py
-# LaunchCast NFL — Backtesting Engine V8.1
-# FIX: Add season line to report header
+# LaunchCast NFL — Backtesting Engine V7.4
+# FIX: Resolve actual season, prevent prior==current leakage, return actual season
 
 import pandas as pd
 import numpy as np
+import streamlit as st
 from data.fetcher import (
     build_features_through, 
     build_defensive_features_through, 
     get_weekly_player_stats,
     load_prior_rates_from_season,
+    resolve_season,
     _load_weekly_raw,
     normalize_columns
 )
 from core.scoring import generate_nfl_projections
 
 def run_nfl_backtest(season=2025, max_weeks=18):
-    """Runs the scoring engine on historical data and grades it."""
+    """
+    Runs the scoring engine on historical data and grades it.
+    FIX: Resolve actual season and prevent prior==current leakage.
+    Returns (results_df, actual_season) tuple.
+    """
     results = []
     
-    prior_rates = load_prior_rates_from_season(season - 1)
+    # FIX: Resolve actual season ONCE at the top
+    actual = resolve_season(season)
+    if actual != season:
+        st.info(f"ℹ️ Backtest running on {actual} data (requested {season})")
+    
+    # FIX: Load priors with leakage check
+    prior_rates = load_prior_rates_from_season(actual - 1)
+    if resolve_season(actual - 1) == actual:
+        prior_rates = pd.DataFrame()
+        st.warning("⚠️ Prior-season data unavailable — week 1-3 priors DISABLED")
     
     for week in range(1, max_weeks + 1):
         try:
-            features = build_features_through(week, season, prior_rates=prior_rates if week <= 3 else None)
+            # Use actual season throughout
+            features = build_features_through(week, actual, prior_rates=prior_rates if week <= 3 else None)
             if features.empty:
                 continue
             
-            all_data = _load_weekly_raw(season)
+            all_data = _load_weekly_raw(actual)
+            if all_data.empty:
+                continue
+                
             all_data = normalize_columns(all_data)
             week_n = all_data[all_data['week'] == week][
                 ['player_id', 'team', 'opponent_team']
@@ -42,7 +61,7 @@ def run_nfl_backtest(season=2025, max_weeks=18):
             if features.empty:
                 continue
             
-            def_features = build_defensive_features_through(week, season)
+            def_features = build_defensive_features_through(week, actual)
             if not def_features.empty:
                 features = features.merge(
                     def_features[['team', 'def_yds_per_tgt', 'def_td_per_tgt']]
@@ -55,7 +74,7 @@ def run_nfl_backtest(season=2025, max_weeks=18):
             if projections.empty:
                 continue
             
-            actuals = get_weekly_player_stats(week, season)
+            actuals = get_weekly_player_stats(week, actual)
             if actuals.empty:
                 continue
             
@@ -110,11 +129,15 @@ def run_nfl_backtest(season=2025, max_weeks=18):
             })
         except Exception as e:
             continue
-            
-    return pd.DataFrame(results)
+    
+    # FIX: Return tuple with actual season
+    return pd.DataFrame(results), actual
 
 def generate_nfl_backtest_copy_text(results_df, season=2025):
-    """Generates a clean, copy-pasteable text report with both TD and Yardage edge."""
+    """
+    Generates a clean, copy-pasteable text report.
+    FIX: season parameter now receives the ACTUAL resolved season, not the requested one.
+    """
     if results_df.empty:
         return "No backtest data available."
     
@@ -122,7 +145,7 @@ def generate_nfl_backtest_copy_text(results_df, season=2025):
     lines.append("🏈 LAUNCHCAST NFL — BACKTEST REPORT")
     lines.append("=" * 50)
     
-    # FIX: Add season line to header
+    # FIX: Header shows actual season that ran
     if len(results_df) > 0:
         week_min = int(results_df['Week'].min())
         week_max = int(results_df['Week'].max())
