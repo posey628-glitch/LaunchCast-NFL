@@ -1,6 +1,7 @@
 # core/patterns.py
-# LaunchCast NFL — Pattern Analysis Engine V7.2
-# FIX: Replace stale team with current team from week N
+# LaunchCast NFL — Pattern Analysis Engine V8
+# FIX: get_proposed_weights now derives weights proportionally from evidence
+# (can both inflate AND deflate — evidence-based redistribution, not one-sided)
 
 import pandas as pd
 import numpy as np
@@ -14,6 +15,8 @@ from data.fetcher import (
 )
 from core.scoring import generate_nfl_projections, BOOM_WEIGHTS
 
+# Track both raw and shrunk versions — this directly answers
+# "is my shrinkage helping or hurting?"
 TRACKED_FEATURES = [
     'target_share', 'shrunk_target_share',
     'yds_per_tgt', 'shrunk_yds_per_tgt',
@@ -27,18 +30,19 @@ def run_pattern_analysis(season=2025, max_weeks=18):
     """Analyze which features correlate with actual TD hits."""
     correlations = []
     
+    # Load prior rates once for early weeks
     prior_rates = load_prior_rates_from_season(season - 1)
     
     for week in range(1, max_weeks + 1):
         try:
+            # Build features (with prior rates for weeks 1-3)
             features = build_features_through(week, season, prior_rates=prior_rates if week <= 3 else None)
             if features.empty:
                 continue
             
+            # Attach current team AND opponent from week N
             all_data = _load_weekly_raw(season)
             all_data = normalize_columns(all_data)
-            
-            # FIX: Get current team AND opponent from week N
             week_n = all_data[all_data['week'] == week][
                 ['player_id', 'team', 'opponent_team']
             ].drop_duplicates('player_id')
@@ -46,7 +50,7 @@ def run_pattern_analysis(season=2025, max_weeks=18):
             if week_n.empty:
                 continue
             
-            # FIX: Drop stale team from features, merge current team from week N
+            # Drop stale team from features, merge current team from week N
             if 'team' in features.columns:
                 features = features.drop(columns=['team'])
             
@@ -54,6 +58,7 @@ def run_pattern_analysis(season=2025, max_weeks=18):
             if features.empty:
                 continue
             
+            # Attach defense
             def_features = build_defensive_features_through(week, season)
             if not def_features.empty:
                 features = features.merge(
@@ -63,10 +68,12 @@ def run_pattern_analysis(season=2025, max_weeks=18):
                     how='left'
                 )
             
+            # Generate projections
             projections = generate_nfl_projections(features, current_week=week)
             if projections.empty:
                 continue
             
+            # Get actuals
             actuals = get_weekly_player_stats(week, season)
             if actuals.empty:
                 continue
@@ -77,6 +84,7 @@ def run_pattern_analysis(season=2025, max_weeks=18):
             test_df = projections.merge(actuals, on=['player_id', 'player_name', 'team'], how='inner')
             test_df['hit_td'] = (test_df['actual_tds'] >= 1).astype(int)
             
+            # Calculate correlation of each feature with hit_td
             for feature in TRACKED_FEATURES:
                 if feature in test_df.columns:
                     feature_vals = pd.to_numeric(test_df[feature], errors='coerce').fillna(0)
@@ -108,30 +116,49 @@ def run_pattern_analysis(season=2025, max_weeks=18):
     
     return summary[['Feature', 'Avg Correlation', 'Std Dev', 'Weeks Sampled']]
 
-def get_proposed_weights(pattern_results):
-    """Based on pattern analysis, propose conservative weight adjustments."""
+def get_proposed_weights(pattern_results, min_weeks=5):
+    """
+    Derive target weights proportionally from evidence, then half-step toward them.
+    
+    FIX: The old version only proposed UPWARD (features below gate kept their weight).
+    This version treats all BOOM_WEIGHTS features — weak features get pulled DOWN,
+    strong features get pulled UP. Evidence-based redistribution, not one-sided bump.
+    
+    Returns dict with current / evidence / target / apply for each feature.
+    """
     if pattern_results.empty:
         return None
     
+    # Build evidence map: |correlation| for each BOOM_WEIGHTS feature
+    ev = {}
+    for _, r in pattern_results.iterrows():
+        feat = r['Feature']
+        if feat in BOOM_WEIGHTS and r['Weeks Sampled'] >= min_weeks:
+            ev[feat] = abs(r['Avg Correlation'])
+    
+    # Need at least 2 features with evidence to redistribute meaningfully
+    if len(ev) < 2:
+        return None
+    
+    total_ev = sum(ev.values()) or 1.0
+    total_w = sum(BOOM_WEIGHTS.values()) or 1.0
+    
     proposed = {}
-    
-    for _, row in pattern_results.iterrows():
-        feature = row['Feature']
-        corr = row['Avg Correlation']
-        weeks = row['Weeks Sampled']
+    for feat, cur in BOOM_WEIGHTS.items():
+        # Evidence-proportional target weight
+        target = (ev.get(feat, 0.0) / total_ev) * total_w
         
-        if weeks >= 5 and abs(corr) >= 0.05:
-            if feature in BOOM_WEIGHTS:
-                current = BOOM_WEIGHTS[feature]
-                adjustment = current * corr * 0.5
-                new_weight = current + adjustment
-                new_weight = max(0.10, min(0.60, new_weight))
-                
-                if abs(new_weight - current) >= 0.005:
-                    proposed[feature] = {
-                        'current': round(current, 2),
-                        'proposed': round(new_weight, 2),
-                        'evidence': f"{corr:+.3f} over {weeks} weeks",
-                    }
+        # ½-step toward target (conservative, same as MLB)
+        applied = cur + 0.5 * (target - cur)
+        
+        # Clamp to reasonable range
+        applied = max(0.10, min(0.70, applied))
+        
+        proposed[feat] = {
+            'current':  round(cur, 3),
+            'evidence': round(ev.get(feat, 0.0), 3),
+            'target':   round(target, 3),
+            'apply':    round(applied, 3),
+        }
     
-    return proposed if proposed else None
+    return proposed
