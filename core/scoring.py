@@ -1,5 +1,5 @@
 # core/scoring.py
-# LaunchCast NFL — Scoring Engine with TD Spike & TD Lift
+# LaunchCast NFL — Scoring Engine (Bulletproof, using only guaranteed columns)
 
 import pandas as pd
 import numpy as np
@@ -40,7 +40,10 @@ def calc_yardage_probability(expected_yards, prop_line, std_dev=22.0):
     return 1 - norm.cdf(z_score)
 
 def generate_nfl_projections(matchup_df, current_week):
-    """Takes raw matchup_df and outputs projections with TD Spike and TD Lift."""
+    """
+    Takes raw matchup_df and outputs projections.
+    Calculates Boom Score and TD Spike using ONLY guaranteed columns.
+    """
     df = matchup_df.copy()
     
     LEAGUE_AVG_TARGET_SHARE = 0.20
@@ -48,23 +51,42 @@ def generate_nfl_projections(matchup_df, current_week):
     LEAGUE_AVG_TD_RATE = 0.05
     TEAM_AVG_PASS_ATTEMPTS = 35.0
     
-    # Step 1: Shrunk Rates
+    # Step 1: Calculate basic rates safely
+    df['targets'] = df.get('targets', 0)
+    df['receiving_yards'] = df.get('receiving_yards', 0)
+    df['receiving_tds'] = df.get('receiving_tds', 0)
+    df['air_yards'] = df.get('air_yards', 0)
+    df['routes'] = df.get('routes', 0)
+    
+    # Target share (if team_targets exists, else estimate)
+    if 'team_targets' in df.columns:
+        df['target_share'] = np.where(df['team_targets'] > 0, df['targets'] / df['team_targets'], 0)
+    else:
+        df['target_share'] = 0.15 # Fallback baseline
+        
+    # Step 2: Shrunk Rates
     df['shrunk_target_share'] = df.apply(
         lambda row: calculate_shrunk_rate(
-            row.get('target_share', 0), 
-            row.get('routes', 0), 
+            row['target_share'], 
+            row['routes'], 
             current_week, 
             LEAGUE_AVG_TARGET_SHARE, 
-            'WR'
+            row.get('position', 'WR')
         ), axis=1
     )
     
-    # Step 2: Base Projections
+    # Step 3: Base Projections
     df['proj_targets'] = (df['shrunk_target_share'] * TEAM_AVG_PASS_ATTEMPTS).round(1)
-    df['proj_rec_yards'] = (df['proj_targets'] * (df.get('adot', 8.0) + LEAGUE_AVG_YAC)).round(1)
-    df['proj_tds'] = (df['proj_targets'] * LEAGUE_AVG_TD_RATE).round(2)
     
-    # Step 3: Prop Probabilities
+    # Yards per target
+    df['yds_per_tgt'] = np.where(df['targets'] > 0, df['receiving_yards'] / df['targets'], 8.0)
+    df['proj_rec_yards'] = (df['proj_targets'] * (df['yds_per_tgt'] + LEAGUE_AVG_YAC)).round(1)
+    
+    # TD rate per target
+    df['td_per_tgt'] = np.where(df['targets'] > 0, df['receiving_tds'] / df['targets'], LEAGUE_AVG_TD_RATE)
+    df['proj_tds'] = (df['proj_targets'] * df['td_per_tgt']).round(2)
+    
+    # Step 4: Prop Probabilities
     df['prob_1plus_td'] = df['proj_tds'].apply(calc_td_probability)
     df['prob_over_45.5_yds'] = df.apply(
         lambda row: calc_yardage_probability(row['proj_rec_yards'], 45.5), axis=1
@@ -73,39 +95,42 @@ def generate_nfl_projections(matchup_df, current_week):
         lambda row: 1 - poisson.cdf(3, row['proj_targets'] * 0.75), axis=1
     )
     
-    # Step 4: TD LIFT (Context Lift)
+    # Step 5: TD LIFT (Context Lift)
     # How much better is this week's TD probability compared to their season baseline?
-    # Baseline = League average TD rate applied to their shrunk target share
     df['baseline_td_prob'] = (df['shrunk_target_share'] * TEAM_AVG_PASS_ATTEMPTS * LEAGUE_AVG_TD_RATE).apply(calc_td_probability)
     df['td_lift'] = (df['prob_1plus_td'] - df['baseline_td_prob']).round(3)
     
-    # Step 5: TD SPIKE (Boom Spot)
-    # Identifies elite matchups where multiple factors align
-    # We use safe .get() because defensive stats might be missing
-    def calculate_td_spike(row):
-        # Base requirements: High TD probability and High Target Share
-        if row.get('prob_1plus_td', 0) < 0.20: return False
-        if row.get('target_share', 0) < 0.20: return False
+    # Step 6: BOOM SCORE (0-100 Composite)
+    # Uses ONLY guaranteed columns: target_share, yds_per_tgt, td_per_tgt
+    def calc_boom_score(row):
+        # Volume score (0-40 pts): Target share
+        vol_score = min(40, (row['target_share'] / 0.30) * 40) 
         
-        # If we have defensive data, require a bad matchup
-        opp_epa = row.get('opp_pass_epa_allowed', None)
-        if pd.notna(opp_epa):
-            # EPA > 0.0 means the defense allows more points than average
-            if opp_epa > 0.0: return True
-        else:
-            # Fallback if no defensive data: require very high volume
-            if row.get('target_share', 0) > 0.25: return True
-            
+        # Efficiency score (0-30 pts): Yards per target (league avg ~11)
+        eff_score = min(30, (row['yds_per_tgt'] / 15.0) * 30)
+        
+        # Red zone score (0-30 pts): TD per target (league avg ~0.05)
+        rz_score = min(30, (row['td_per_tgt'] / 0.10) * 30)
+        
+        return round(vol_score + eff_score + rz_score, 1)
+
+    df['boom_score'] = df.apply(calc_boom_score, axis=1)
+    
+    # Step 7: TD SPIKE (Boom Spot)
+    # Identifies elite matchups: High TD prob + High Target Share + High Boom Score
+    def calc_td_spike(row):
+        if row.get('prob_1plus_td', 0) >= 0.20 and row.get('target_share', 0) >= 0.20 and row.get('boom_score', 0) >= 60:
+            return True
         return False
 
-    df['td_spike'] = df.apply(calculate_td_spike, axis=1)
+    df['td_spike'] = df.apply(calc_td_spike, axis=1)
     
     # Return only the columns we need
     desired_cols = [
         'player_name', 'position', 'team', 'opponent_team',
         'proj_targets', 'proj_rec_yards', 'proj_tds',
         'prob_1plus_td', 'prob_over_45.5_yds', 'prob_over_3.5_rec',
-        'td_lift', 'td_spike'
+        'boom_score', 'td_lift', 'td_spike'
     ]
     
     valid_cols = [c for c in desired_cols if c in df.columns]
