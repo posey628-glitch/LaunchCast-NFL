@@ -1,6 +1,6 @@
 # data/fetcher.py
-# LaunchCast NFL — Data Fetcher V7
-# ADDS: Last-season priors for early weeks, team-specific pass volume
+# LaunchCast NFL — Data Fetcher V7.1
+# FIXES: Week 1 uses priors as base, team_weeks merged for weeks 2-3
 
 import pandas as pd
 import numpy as np
@@ -105,7 +105,8 @@ def load_prior_rates_from_season(season: int) -> pd.DataFrame:
 def build_features_through(week: int, year: int, prior_rates: pd.DataFrame = None) -> pd.DataFrame:
     """
     Build season-to-date player rates using ONLY weeks before `week`.
-    For weeks 1-3, blend with last season's rates as priors.
+    For Week 1, uses last season's rates as the base.
+    For weeks 2-3, blends current season with last season.
     """
     try:
         raw = _load_weekly_raw(year)
@@ -117,6 +118,23 @@ def build_features_through(week: int, year: int, prior_rates: pd.DataFrame = Non
         groupby_cols = ['player_id', 'player_name', 'team']
         if 'position' in raw.columns:
             groupby_cols.append('position')
+        
+        # FIX 1: Week 1 — use priors as base when history is empty
+        if hist.empty:
+            if prior_rates is None or prior_rates.empty:
+                return pd.DataFrame()
+            
+            # Use last season as the Week 1 projection base
+            g = prior_rates.rename(columns={
+                'prior_target_share': 'target_share',
+                'prior_yds_per_tgt': 'yds_per_tgt',
+                'prior_td_per_tgt': 'td_per_tgt',
+                'prior_team_pass_att': 'team_avg_pass_attempts',
+            }).copy()
+            g['games'] = 0
+            g['adot'] = 8.0
+            g['routes'] = 0  # No routes data for Week 1
+            return g
         
         # Build aggregation dict defensively
         agg_dict = {
@@ -147,8 +165,15 @@ def build_features_through(week: int, year: int, prior_rates: pd.DataFrame = Non
             team_vol_cur['team_total_targets'] / team_vol_cur['team_weeks'],
             35.0
         )
-        g = g.merge(team_vol_cur[['team', 'team_avg_pass_attempts']], on='team', how='left')
+        
+        # FIX 2: Merge team_weeks so the conditional works
+        g = g.merge(
+            team_vol_cur[['team', 'team_avg_pass_attempts', 'team_weeks']],
+            on='team',
+            how='left'
+        )
         g['team_avg_pass_attempts'] = g['team_avg_pass_attempts'].fillna(35.0)
+        g['team_weeks'] = g['team_weeks'].fillna(0)
         
         # Calculate rates from historical data
         g['yds_per_tgt'] = np.where(g['targets'] > 0, g['receiving_yards'] / g['targets'], 11.0)
@@ -167,7 +192,7 @@ def build_features_through(week: int, year: int, prior_rates: pd.DataFrame = Non
             0
         )
         
-        # FIX: For weeks 1-3, blend with last season's rates as priors
+        # For weeks 1-3, blend with last season's rates as priors
         if prior_rates is not None and not prior_rates.empty and week <= 3:
             # Merge prior rates on player_id
             prior_cols = ['player_id', 'prior_yds_per_tgt', 'prior_td_per_tgt', 
@@ -181,7 +206,6 @@ def build_features_through(week: int, year: int, prior_rates: pd.DataFrame = Non
             )
             
             # Bayesian blend: current_targets vs prior_targets (strength of prior)
-            # Prior strength = 60 targets (roughly a full-season WR1)
             prior_strength = 60.0
             
             # Blend target_share
@@ -212,8 +236,9 @@ def build_features_through(week: int, year: int, prior_rates: pd.DataFrame = Non
             )
             
             # Use prior team pass attempts if current season has no data yet (Week 1)
+            # FIX 2: Now team_weeks exists, so this conditional works
             g['team_avg_pass_attempts'] = np.where(
-                (g['team_weeks'] if 'team_weeks' in g.columns else 0) > 0,
+                g['team_weeks'] > 0,
                 g['team_avg_pass_attempts'],
                 g['prior_team_pass_att'].fillna(35.0)
             )
@@ -292,7 +317,7 @@ def build_matchup_matrix(week: int, year: int = None) -> pd.DataFrame:
     if year is None:
         year = PREFERRED_SEASON
     
-    # FIX: Load prior rates for early weeks
+    # Load prior rates for early weeks (including Week 1)
     prior_rates = None
     if week <= 3:
         prior_rates = load_prior_rates_from_season(year - 1)
