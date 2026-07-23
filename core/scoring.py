@@ -17,9 +17,19 @@ from scipy.stats import poisson, norm
 # ============================================================================
 
 # Weight given to opponent defense in the TD-rate blend.
-# Evidence (2024, 18wk): def_td_per_tgt correlates +0.003 with scoring —
-# statistically nothing. Try 0.4 / 0.2 / 0.0 and keep the winner.
-DEF_BLEND = 0.4
+#
+# EXPERIMENT IN PROGRESS. Evidence (2024, 18wk): def_td_per_tgt correlates
+# +0.003 with actual scoring — statistically indistinguishable from zero.
+# Baseline at 0.4 produced: TD edge +17.2pp, Brier 0.1145.
+#
+# Set to 0.0 to test removing the matchup layer entirely. Compare EDGE (not
+# Brier) against that baseline and keep the winner. Three plausible outcomes:
+#   edge HOLDS/RISES -> defense adds nothing; keep 0.0, model is simpler
+#   edge FALLS a lot -> the blend was doing useful work after all; revert
+#   edge falls SLIGHTLY -> the blend's value was shrinking extreme player
+#                          rates toward league average, not matchup signal.
+#                          Try 0.2, or shrink td_per_tgt harder instead.
+DEF_BLEND = 0.0
 
 # Bayesian shrinkage priors, in TARGET units.
 # Evidence: raw target_share (+0.283) still beats shrunk (+0.228), so these
