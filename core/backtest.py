@@ -1,31 +1,51 @@
 # core/backtest.py
-# LaunchCast NFL — Backtesting Engine V4 (Leakage-Free)
+# LaunchCast NFL — Backtesting Engine V5
+# FIX: Same defensive merge pattern as fetcher
 
 import pandas as pd
 import numpy as np
-from data.fetcher import build_features_through, build_defensive_features_through, get_weekly_player_stats
+from data.fetcher import (
+    build_features_through, 
+    build_defensive_features_through, 
+    get_weekly_player_stats,
+    _load_weekly_raw,
+    normalize_columns
+)
 from core.scoring import generate_nfl_projections
 
-def run_nfl_backtest(season=2024, max_weeks=18):
+def run_nfl_backtest(season=2025, max_weeks=18):
     """
     Runs the scoring engine on historical data and grades it.
-    FIX: Features from weeks 1 to N-1, outcomes from week N.
+    Features from weeks 1 to N-1, outcomes from week N.
     """
     results = []
     
-    for week in range(2, max_weeks + 1):  # Start at week 2 (need week 1 for features)
+    for week in range(2, max_weeks + 1):
         try:
             # Build features from weeks 1 to N-1 (NO LEAKAGE)
             features = build_features_through(week, season)
             if features.empty:
                 continue
             
-            # Build defensive features from weeks 1 to N-1
+            # FIX STEP 1: Attach this week's opponent FIRST
+            all_data = _load_weekly_raw(season)
+            all_data = normalize_columns(all_data)
+            week_n = all_data[all_data['week'] == week][['player_id', 'opponent_team']].drop_duplicates('player_id')
+            
+            if week_n.empty:
+                continue
+            
+            features = features.merge(week_n, on='player_id', how='inner')
+            if features.empty:
+                continue
+            
+            # FIX STEP 2: THEN attach the defense they FACE
             def_features = build_defensive_features_through(week, season)
             if not def_features.empty:
                 features = features.merge(
-                    def_features[['team', 'def_yds_per_tgt', 'def_td_per_tgt']],
-                    on='team',
+                    def_features[['team', 'def_yds_per_tgt', 'def_td_per_tgt']]
+                        .rename(columns={'team': 'opponent_team'}),
+                    on='opponent_team',
                     how='left'
                 )
             
@@ -34,7 +54,7 @@ def run_nfl_backtest(season=2024, max_weeks=18):
             if projections.empty:
                 continue
             
-            # Get ACTUAL outcomes from week N (the week we're projecting)
+            # Get ACTUAL outcomes from week N
             actuals = get_weekly_player_stats(week, season)
             if actuals.empty:
                 continue
@@ -46,7 +66,7 @@ def run_nfl_backtest(season=2024, max_weeks=18):
                 'receptions': 'actual_rec'
             }).fillna(0)
             
-            # Merge projections with actuals on player_id (NO LEAKAGE)
+            # Merge projections with actuals on player_id
             test_df = projections.merge(actuals, on=['player_id', 'player_name', 'team'], how='inner', suffixes=('', '_actual'))
             
             # Calculate hits
