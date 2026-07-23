@@ -1,7 +1,6 @@
 # data/fetcher.py
-# LaunchCast NFL — Data Fetcher V5
-# FIXES: target_share denominator, defensive merge order, defensive agg safety,
-# PREFERRED_SEASON back to 2025, column-safe aggregation
+# LaunchCast NFL — Data Fetcher V5.2
+# FIXES: position in groupby, defensive column hardening, games merge
 
 import pandas as pd
 import numpy as np
@@ -11,7 +10,6 @@ from datetime import datetime
 CURRENT_YEAR = datetime.now().year
 CURRENT_MONTH = datetime.now().month
 
-# FIX: Back to 2025 (V3 had this right, V4 regressed)
 if CURRENT_MONTH < 9:
     PREFERRED_SEASON = 2025
     FALLBACK_SEASON = 2024
@@ -51,35 +49,41 @@ def build_features_through(week: int, year: int) -> pd.DataFrame:
         raw = _load_weekly_raw(year)
         raw = normalize_columns(raw)
         
-        # Only use data from weeks BEFORE the week we're projecting
         hist = raw[raw['week'] < week]
         
         if hist.empty:
             return pd.DataFrame()
         
-        # FIX: Build aggregation dict defensively — only aggregate columns that exist
+        # FIX 1: Build groupby keys defensively
+        groupby_cols = ['player_id', 'player_name', 'team']
+        if 'position' in hist.columns:
+            groupby_cols.append('position')
+        
+        # Build aggregation dict defensively
         agg_dict = {
             'targets': ('targets', 'sum'),
             'receiving_yards': ('receiving_yards', 'sum'),
             'receiving_tds': ('receiving_tds', 'sum'),
         }
         
-        # Optional columns — only include if they exist
         if 'air_yards' in hist.columns:
             agg_dict['air_yards'] = ('air_yards', 'sum')
         if 'routes' in hist.columns:
             agg_dict['routes'] = ('routes', 'sum')
         
-        # Build the aggregation
         agg_tuples = list(agg_dict.values())
         agg_names = list(agg_dict.keys())
         
-        g = hist.groupby(['player_id', 'player_name', 'team'], as_index=False).agg(
+        g = hist.groupby(groupby_cols, as_index=False).agg(
             **{name: spec for name, spec in zip(agg_names, agg_tuples)}
         )
-        g['games'] = hist.groupby(['player_id', 'player_name', 'team'])['week'].nunique().reset_index()['week']
         
-        # Calculate rates from historical data only
+        # FIX 3: Games column via merge, not positional assignment
+        _gm = hist.groupby(groupby_cols, as_index=False)['week'].nunique()
+        _gm = _gm.rename(columns={'week': 'games'})
+        g = g.merge(_gm, on=groupby_cols, how='left')
+        
+        # Calculate rates
         g['yds_per_tgt'] = np.where(g['targets'] > 0, g['receiving_yards'] / g['targets'], 11.0)
         g['td_per_tgt'] = np.where(g['targets'] > 0, g['receiving_tds'] / g['targets'], 0.05)
         
@@ -88,7 +92,7 @@ def build_features_through(week: int, year: int) -> pd.DataFrame:
         else:
             g['adot'] = 8.0
         
-        # FIX: target_share uses TEAM denominator, not league-wide
+        # target_share uses TEAM denominator
         g['team_targets'] = g.groupby('team')['targets'].transform('sum')
         g['target_share'] = np.where(
             g['team_targets'] > 0,
@@ -104,6 +108,7 @@ def build_features_through(week: int, year: int) -> pd.DataFrame:
 def build_defensive_features_through(week: int, year: int) -> pd.DataFrame:
     """
     Build season-to-date defensive stats using ONLY weeks before `week`.
+    FIX 2: Column-hardened to prevent silent failures.
     """
     try:
         raw = _load_weekly_raw(year)
@@ -114,29 +119,34 @@ def build_defensive_features_through(week: int, year: int) -> pd.DataFrame:
         if hist.empty:
             return pd.DataFrame()
         
-        # Build defensive aggregation defensively
-        agg_dict = {
-            'targets_allowed': ('targets', 'sum'),
-            'receptions_allowed': ('receptions', 'sum'),
-            'yards_allowed': ('receiving_yards', 'sum'),
-            'tds_allowed': ('receiving_tds', 'sum'),
-        }
+        # FIX 2: Build aggregation dict defensively
+        spec = {}
+        if 'targets' in hist.columns:
+            spec['targets_allowed'] = ('targets', 'sum')
+        if 'receptions' in hist.columns:
+            spec['receptions_allowed'] = ('receptions', 'sum')
+        if 'receiving_yards' in hist.columns:
+            spec['yards_allowed'] = ('receiving_yards', 'sum')
+        if 'receiving_tds' in hist.columns:
+            spec['tds_allowed'] = ('receiving_tds', 'sum')
         
-        def_agg = hist.groupby(['opponent_team'], as_index=False).agg(
-            **{name: spec for name, spec in agg_dict.items()}
-        )
+        # FIX 2: Explicit warning if critical columns missing
+        if 'targets_allowed' not in spec or 'tds_allowed' not in spec:
+            st.warning("⚠️ Defensive features unavailable — matchup adjustment is OFF this run")
+            return pd.DataFrame()
         
+        def_agg = hist.groupby(['opponent_team'], as_index=False).agg(**spec)
         def_agg = def_agg.rename(columns={'opponent_team': 'team'})
         
         # Calculate defensive rates
         def_agg['def_yds_per_tgt'] = np.where(
-            def_agg['targets_allowed'] > 0,
-            def_agg['yards_allowed'] / def_agg['targets_allowed'],
+            def_agg.get('targets_allowed', pd.Series([0])) > 0,
+            def_agg.get('yards_allowed', pd.Series([0])) / def_agg['targets_allowed'],
             11.0
         )
         def_agg['def_td_per_tgt'] = np.where(
             def_agg['targets_allowed'] > 0,
-            def_agg['tds_allowed'] / def_agg['targets_allowed'],
+            def_agg.get('tds_allowed', pd.Series([0])) / def_agg['targets_allowed'],
             0.05
         )
         
@@ -166,17 +176,15 @@ def get_weekly_player_stats(week: int, year: int = None) -> pd.DataFrame:
 def build_matchup_matrix(week: int, year: int = None) -> pd.DataFrame:
     """
     Build matchup matrix for LIVE projections.
-    FIX: Attach opponent FIRST, then merge defense on opponent_team.
+    Attach opponent FIRST, then merge defense on opponent_team.
     """
     if year is None:
         year = PREFERRED_SEASON
     
-    # Build features from historical data (weeks 1 to N-1)
     features = build_features_through(week, year)
     if features.empty:
         return pd.DataFrame()
     
-    # FIX STEP 1: Attach this week's opponent FIRST
     try:
         all_data = _load_weekly_raw(year)
         all_data = normalize_columns(all_data)
@@ -185,13 +193,11 @@ def build_matchup_matrix(week: int, year: int = None) -> pd.DataFrame:
         if week_n.empty:
             return pd.DataFrame()
         
-        # Inner join = only players actually playing this week
         features = features.merge(week_n, on='player_id', how='inner')
     except Exception as e:
         st.warning(f"Opponent attach failed: {e}")
         return pd.DataFrame()
     
-    # FIX STEP 2: THEN attach the defense they FACE (on opponent_team)
     def_features = build_defensive_features_through(week, year)
     
     if not def_features.empty:
