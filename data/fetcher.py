@@ -1,6 +1,6 @@
 # data/fetcher.py
 # LaunchCast NFL — Data Fetcher V3
-# FIXES: defensive merge direction, column normalization, caching
+# FIXES: defensive merge direction, column normalization, caching, season logic
 
 import pandas as pd
 import numpy as np
@@ -10,9 +10,11 @@ from datetime import datetime
 CURRENT_YEAR = datetime.now().year
 CURRENT_MONTH = datetime.now().month
 
+# FIX: During offseason (Jan-Aug), use 2024 (most recent complete season)
+# 2025 data won't exist until after the 2025 season ends (Feb 2026)
 if CURRENT_MONTH < 9:
-    PREFERRED_SEASON = 2025  # FIXED: was 2024
-    FALLBACK_SEASON = 2024
+    PREFERRED_SEASON = 2024  # FIXED: was 2025
+    FALLBACK_SEASON = 2023
 else:
     PREFERRED_SEASON = CURRENT_YEAR
     FALLBACK_SEASON = CURRENT_YEAR - 1
