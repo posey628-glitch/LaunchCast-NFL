@@ -1,7 +1,6 @@
 # core/backtest.py
-# LaunchCast NFL — Backtesting Engine V8
-# ADDS: Yardage edge metrics (Top20 Yds Hit %, Yds Edge pp, Yds Lift)
-# FIX: Stale team replacement, Week 1 support
+# LaunchCast NFL — Backtesting Engine V8.1
+# FIX: Add season line to report header
 
 import pandas as pd
 import numpy as np
@@ -16,23 +15,17 @@ from data.fetcher import (
 from core.scoring import generate_nfl_projections
 
 def run_nfl_backtest(season=2025, max_weeks=18):
-    """
-    Runs the scoring engine on historical data and grades it.
-    Includes edge metrics for BOTH TD and Yardage props.
-    """
+    """Runs the scoring engine on historical data and grades it."""
     results = []
     
-    # Load prior rates once for early weeks
     prior_rates = load_prior_rates_from_season(season - 1)
     
     for week in range(1, max_weeks + 1):
         try:
-            # Build features (with prior rates for weeks 1-3)
             features = build_features_through(week, season, prior_rates=prior_rates if week <= 3 else None)
             if features.empty:
                 continue
             
-            # Attach current team AND opponent from week N
             all_data = _load_weekly_raw(season)
             all_data = normalize_columns(all_data)
             week_n = all_data[all_data['week'] == week][
@@ -42,7 +35,6 @@ def run_nfl_backtest(season=2025, max_weeks=18):
             if week_n.empty:
                 continue
             
-            # Drop stale team from features, merge current team from week N
             if 'team' in features.columns:
                 features = features.drop(columns=['team'])
             
@@ -50,7 +42,6 @@ def run_nfl_backtest(season=2025, max_weeks=18):
             if features.empty:
                 continue
             
-            # Attach defense
             def_features = build_defensive_features_through(week, season)
             if not def_features.empty:
                 features = features.merge(
@@ -60,12 +51,10 @@ def run_nfl_backtest(season=2025, max_weeks=18):
                     how='left'
                 )
             
-            # Generate projections
             projections = generate_nfl_projections(features, current_week=week)
             if projections.empty:
                 continue
             
-            # Get actuals
             actuals = get_weekly_player_stats(week, season)
             if actuals.empty:
                 continue
@@ -85,21 +74,19 @@ def run_nfl_backtest(season=2025, max_weeks=18):
                 suffixes=('', '_actual')
             )
             
-            # Calculate hits
             test_df['hit_td'] = (test_df['actual_tds'] >= 1).astype(int)
             test_df['hit_yards'] = (test_df['actual_yards'] > 45.5).astype(int)
             
-            # Calculate Brier scores
             test_df['brier_td'] = (test_df['prob_1plus_td'] - test_df['hit_td']) ** 2
             test_df['brier_yards'] = (test_df['prob_over_45.5_yds'] - test_df['hit_yards']) ** 2
             
-            # === EDGE METRICS: TD ===
+            # Edge metrics: TD
             test_df_sorted_td = test_df.sort_values('prob_1plus_td', ascending=False)
             top20_td = test_df_sorted_td.head(20)
             base_rate_td = test_df['hit_td'].mean()
             top20_rate_td = top20_td['hit_td'].mean()
             
-            # === EDGE METRICS: YARDAGE (NEW) ===
+            # Edge metrics: Yardage
             test_df_sorted_yds = test_df.sort_values('prob_over_45.5_yds', ascending=False)
             top20_yds = test_df_sorted_yds.head(20)
             base_rate_yds = test_df['hit_yards'].mean()
@@ -108,14 +95,12 @@ def run_nfl_backtest(season=2025, max_weeks=18):
             results.append({
                 'Week': week,
                 'Players': len(test_df),
-                # TD metrics
                 'Avg Brier (TD)': round(test_df['brier_td'].mean(), 4),
                 'Hit Rate (TD)': round(test_df['hit_td'].mean() * 100, 1),
                 'Avg Prob (TD)': round(test_df['prob_1plus_td'].mean() * 100, 1),
                 'Top20 TD Hit %': round(top20_rate_td * 100, 1),
                 'TD Edge (pp)': round((top20_rate_td - base_rate_td) * 100, 1),
                 'TD Lift': round(top20_rate_td / base_rate_td, 2) if base_rate_td > 0 else None,
-                # Yardage metrics
                 'Avg Brier (Yds)': round(test_df['brier_yards'].mean(), 4),
                 'Hit Rate (Yds)': round(test_df['hit_yards'].mean() * 100, 1),
                 'Avg Prob (Yds)': round(test_df['prob_over_45.5_yds'].mean() * 100, 1),
@@ -128,7 +113,7 @@ def run_nfl_backtest(season=2025, max_weeks=18):
             
     return pd.DataFrame(results)
 
-def generate_nfl_backtest_copy_text(results_df):
+def generate_nfl_backtest_copy_text(results_df, season=2025):
     """Generates a clean, copy-pasteable text report with both TD and Yardage edge."""
     if results_df.empty:
         return "No backtest data available."
@@ -137,7 +122,13 @@ def generate_nfl_backtest_copy_text(results_df):
     lines.append("🏈 LAUNCHCAST NFL — BACKTEST REPORT")
     lines.append("=" * 50)
     
-    # === TD SUMMARY ===
+    # FIX: Add season line to header
+    if len(results_df) > 0:
+        week_min = int(results_df['Week'].min())
+        week_max = int(results_df['Week'].max())
+        lines.append(f"Season: {season} | Weeks graded: {len(results_df)} | Range: {week_min}-{week_max}")
+    
+    # TD SUMMARY
     lines.append("")
     lines.append("🎯 TOUCHDOWN PROPS")
     lines.append("-" * 50)
@@ -169,7 +160,7 @@ def generate_nfl_backtest_copy_text(results_df):
         else:
             lines.append("⚠️ WEAK EDGE — TD model is calibrated but not discriminating")
     
-    # === YARDAGE SUMMARY (NEW) ===
+    # YARDAGE SUMMARY
     if 'Top20 Yds Hit %' in results_df.columns:
         lines.append("")
         lines.append("📏 YARDAGE PROPS (Over 45.5)")
@@ -201,7 +192,7 @@ def generate_nfl_backtest_copy_text(results_df):
         else:
             lines.append("⚠️ WEAK EDGE — Yardage model is calibrated but not discriminating")
     
-    # === WEEKLY BREAKDOWN ===
+    # WEEKLY BREAKDOWN
     lines.append("")
     lines.append("📊 WEEKLY BREAKDOWN")
     lines.append("-" * 50)
@@ -222,7 +213,7 @@ def generate_nfl_backtest_copy_text(results_df):
         
     lines.append("-" * 50)
     
-    # === KEY INSIGHTS ===
+    # KEY INSIGHTS
     if len(results_df) > 0:
         lines.append("")
         lines.append("🔍 KEY INSIGHTS")
