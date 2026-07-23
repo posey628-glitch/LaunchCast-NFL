@@ -8,6 +8,6 @@ font = "sans serif"
 
 [server]
 headless = true
-port = 8501
-enableCORS = false
+# NOTE: enableCORS = false was removed — it contradicts enableXsrfProtection,
+# which Streamlit resolves by ignoring the CORS setting and warning on boot.
 enableXsrfProtection = true
