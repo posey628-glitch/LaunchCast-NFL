@@ -13,7 +13,7 @@ def get_matchup_grade(prob, position):
 
 def get_verdict_emoji(prob, is_spike=False):
     if is_spike: return "🔥 SPIKE"
-    if prob >= 0.60: return ""
+    if prob >= 0.60: return "🔥"
     if prob >= 0.45: return "✅"
     if prob >= 0.30: return "🟡"
     return "⚠️"
@@ -90,10 +90,36 @@ def render_backtest_section(results_df):
         st.metric("Avg Hit Rate (TD)", f"{avg_hit:.1f}%")
         
     st.divider()
-    st.subheader(" Copy Report")
+    st.subheader("📋 Copy Report")
     st.caption("Click the copy icon in the top-right of the box below to paste this into notes or Discord.")
     
     # Import the text generator
     from core.backtest import generate_nfl_backtest_copy_text
     copy_text = generate_nfl_backtest_copy_text(results_df)
     st.code(copy_text, language="text")
+
+def render_nfl_dashboard(schedule, rosters, projections, is_offseason=False, display_year=2024):
+    """Main dashboard."""
+    st.title(" LaunchCast NFL")
+    
+    if is_offseason:
+        st.caption(f"Evidence-based prop projections ({display_year} season data for testing). Live 2026 season starts September.")
+    else:
+        st.caption("Evidence-based prop projections powered by nflverse & Bayesian shrinkage.")
+    
+    # Tabs
+    tab_td, tab_yards, tab_rec = st.tabs(["🎯 Touchdowns", "📏 Receiving Yards", "🎯 Receptions"])
+    
+    with tab_td:
+        st.subheader("Anytime Touchdown Leaderboard")
+        render_prop_leaderboard(projections, prop_type='td')
+    
+    with tab_yards:
+        st.subheader("Receiving Yards Overs")
+        st.caption("Probabilities based on a standard 45.5 yard line.")
+        render_prop_leaderboard(projections, prop_type='yards')
+    
+    with tab_rec:
+        st.subheader("Reception Overs")
+        st.caption("Probabilities based on a standard 3.5 reception line.")
+        render_prop_leaderboard(projections, prop_type='rec')
