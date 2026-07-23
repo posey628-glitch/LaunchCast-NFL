@@ -1,7 +1,6 @@
 # core/patterns.py
-# LaunchCast NFL — Pattern Analysis Engine V8
-# FIX: get_proposed_weights now derives weights proportionally from evidence
-# (can both inflate AND deflate — evidence-based redistribution, not one-sided)
+# LaunchCast NFL — Pattern Analysis Engine V8.1
+# FIX: abs() bug in get_proposed_weights — negative correlations should get 0 weight, not positive
 
 import pandas as pd
 import numpy as np
@@ -15,8 +14,6 @@ from data.fetcher import (
 )
 from core.scoring import generate_nfl_projections, BOOM_WEIGHTS
 
-# Track both raw and shrunk versions — this directly answers
-# "is my shrinkage helping or hurting?"
 TRACKED_FEATURES = [
     'target_share', 'shrunk_target_share',
     'yds_per_tgt', 'shrunk_yds_per_tgt',
@@ -30,17 +27,14 @@ def run_pattern_analysis(season=2025, max_weeks=18):
     """Analyze which features correlate with actual TD hits."""
     correlations = []
     
-    # Load prior rates once for early weeks
     prior_rates = load_prior_rates_from_season(season - 1)
     
     for week in range(1, max_weeks + 1):
         try:
-            # Build features (with prior rates for weeks 1-3)
             features = build_features_through(week, season, prior_rates=prior_rates if week <= 3 else None)
             if features.empty:
                 continue
             
-            # Attach current team AND opponent from week N
             all_data = _load_weekly_raw(season)
             all_data = normalize_columns(all_data)
             week_n = all_data[all_data['week'] == week][
@@ -50,7 +44,6 @@ def run_pattern_analysis(season=2025, max_weeks=18):
             if week_n.empty:
                 continue
             
-            # Drop stale team from features, merge current team from week N
             if 'team' in features.columns:
                 features = features.drop(columns=['team'])
             
@@ -58,7 +51,6 @@ def run_pattern_analysis(season=2025, max_weeks=18):
             if features.empty:
                 continue
             
-            # Attach defense
             def_features = build_defensive_features_through(week, season)
             if not def_features.empty:
                 features = features.merge(
@@ -68,12 +60,10 @@ def run_pattern_analysis(season=2025, max_weeks=18):
                     how='left'
                 )
             
-            # Generate projections
             projections = generate_nfl_projections(features, current_week=week)
             if projections.empty:
                 continue
             
-            # Get actuals
             actuals = get_weekly_player_stats(week, season)
             if actuals.empty:
                 continue
@@ -84,7 +74,6 @@ def run_pattern_analysis(season=2025, max_weeks=18):
             test_df = projections.merge(actuals, on=['player_id', 'player_name', 'team'], how='inner')
             test_df['hit_td'] = (test_df['actual_tds'] >= 1).astype(int)
             
-            # Calculate correlation of each feature with hit_td
             for feature in TRACKED_FEATURES:
                 if feature in test_df.columns:
                     feature_vals = pd.to_numeric(test_df[feature], errors='coerce').fillna(0)
@@ -120,23 +109,26 @@ def get_proposed_weights(pattern_results, min_weeks=5):
     """
     Derive target weights proportionally from evidence, then half-step toward them.
     
-    FIX: The old version only proposed UPWARD (features below gate kept their weight).
-    This version treats all BOOM_WEIGHTS features — weak features get pulled DOWN,
-    strong features get pulled UP. Evidence-based redistribution, not one-sided bump.
-    
-    Returns dict with current / evidence / target / apply for each feature.
+    FIX: The abs() bug threw away sign information. A feature with correlation -0.105
+    (higher YPT = fewer TDs) was treated as positive evidence. Now:
+    - Negative correlations get 0 weight (they're anti-predictors)
+    - Only positive correlations contribute to the weight pool
     """
     if pattern_results.empty:
         return None
     
-    # Build evidence map: |correlation| for each BOOM_WEIGHTS feature
+    # Build evidence map: correlation (NOT abs) for each BOOM_WEIGHTS feature
     ev = {}
     for _, r in pattern_results.iterrows():
         feat = r['Feature']
         if feat in BOOM_WEIGHTS and r['Weeks Sampled'] >= min_weeks:
-            ev[feat] = abs(r['Avg Correlation'])
+            corr = r['Avg Correlation']
+            # FIX: Negative correlations get 0 weight
+            if corr < -0.03:
+                ev[feat] = 0.0
+            else:
+                ev[feat] = max(0.0, corr)
     
-    # Need at least 2 features with evidence to redistribute meaningfully
     if len(ev) < 2:
         return None
     
@@ -145,13 +137,8 @@ def get_proposed_weights(pattern_results, min_weeks=5):
     
     proposed = {}
     for feat, cur in BOOM_WEIGHTS.items():
-        # Evidence-proportional target weight
         target = (ev.get(feat, 0.0) / total_ev) * total_w
-        
-        # ½-step toward target (conservative, same as MLB)
         applied = cur + 0.5 * (target - cur)
-        
-        # Clamp to reasonable range
         applied = max(0.10, min(0.70, applied))
         
         proposed[feat] = {
