@@ -1,6 +1,6 @@
 # data/fetcher.py
-# LaunchCast NFL — Data Fetcher V5.2
-# FIXES: position in groupby, defensive column hardening, games merge
+# LaunchCast NFL — Data Fetcher V5.3
+# FIXES: .get() fallback alignment, traded player deduplication
 
 import pandas as pd
 import numpy as np
@@ -54,7 +54,7 @@ def build_features_through(week: int, year: int) -> pd.DataFrame:
         if hist.empty:
             return pd.DataFrame()
         
-        # FIX 1: Build groupby keys defensively
+        # Build groupby keys defensively
         groupby_cols = ['player_id', 'player_name', 'team']
         if 'position' in hist.columns:
             groupby_cols.append('position')
@@ -78,7 +78,7 @@ def build_features_through(week: int, year: int) -> pd.DataFrame:
             **{name: spec for name, spec in zip(agg_names, agg_tuples)}
         )
         
-        # FIX 3: Games column via merge, not positional assignment
+        # Games column via merge
         _gm = hist.groupby(groupby_cols, as_index=False)['week'].nunique()
         _gm = _gm.rename(columns={'week': 'games'})
         g = g.merge(_gm, on=groupby_cols, how='left')
@@ -100,6 +100,9 @@ def build_features_through(week: int, year: int) -> pd.DataFrame:
             0
         )
         
+        # FIX: Deduplicate traded players — keep the stint with most games
+        g = g.sort_values('games', ascending=False).drop_duplicates('player_id', keep='first')
+        
         return g
     except Exception as e:
         st.warning(f"Feature build failed: {e}")
@@ -108,7 +111,7 @@ def build_features_through(week: int, year: int) -> pd.DataFrame:
 def build_defensive_features_through(week: int, year: int) -> pd.DataFrame:
     """
     Build season-to-date defensive stats using ONLY weeks before `week`.
-    FIX 2: Column-hardened to prevent silent failures.
+    Column-hardened to prevent silent failures.
     """
     try:
         raw = _load_weekly_raw(year)
@@ -119,7 +122,7 @@ def build_defensive_features_through(week: int, year: int) -> pd.DataFrame:
         if hist.empty:
             return pd.DataFrame()
         
-        # FIX 2: Build aggregation dict defensively
+        # Build aggregation dict defensively
         spec = {}
         if 'targets' in hist.columns:
             spec['targets_allowed'] = ('targets', 'sum')
@@ -130,7 +133,7 @@ def build_defensive_features_through(week: int, year: int) -> pd.DataFrame:
         if 'receiving_tds' in hist.columns:
             spec['tds_allowed'] = ('receiving_tds', 'sum')
         
-        # FIX 2: Explicit warning if critical columns missing
+        # Explicit warning if critical columns missing
         if 'targets_allowed' not in spec or 'tds_allowed' not in spec:
             st.warning("⚠️ Defensive features unavailable — matchup adjustment is OFF this run")
             return pd.DataFrame()
@@ -138,17 +141,15 @@ def build_defensive_features_through(week: int, year: int) -> pd.DataFrame:
         def_agg = hist.groupby(['opponent_team'], as_index=False).agg(**spec)
         def_agg = def_agg.rename(columns={'opponent_team': 'team'})
         
-        # Calculate defensive rates
-        def_agg['def_yds_per_tgt'] = np.where(
-            def_agg.get('targets_allowed', pd.Series([0])) > 0,
-            def_agg.get('yards_allowed', pd.Series([0])) / def_agg['targets_allowed'],
-            11.0
-        )
-        def_agg['def_td_per_tgt'] = np.where(
-            def_agg['targets_allowed'] > 0,
-            def_agg.get('tds_allowed', pd.Series([0])) / def_agg['targets_allowed'],
-            0.05
-        )
+        # FIX: Handle optional columns explicitly — no .get() with Series([0])
+        _ta = def_agg['targets_allowed']
+        
+        if 'yards_allowed' in def_agg.columns:
+            def_agg['def_yds_per_tgt'] = np.where(_ta > 0, def_agg['yards_allowed'] / _ta, 11.0)
+        else:
+            def_agg['def_yds_per_tgt'] = 11.0
+        
+        def_agg['def_td_per_tgt'] = np.where(_ta > 0, def_agg['tds_allowed'] / _ta, 0.05)
         
         return def_agg
     except Exception as e:
