@@ -1,6 +1,6 @@
 # app.py
-# LaunchCast NFL — V8.3
-# FIX: Unpack tuple return from run_pattern_analysis
+# LaunchCast NFL — V8.4
+# Owner mode, Pattern Analysis with copy button, resolve_season, tuple unpacking
 
 import streamlit as st
 import pandas as pd
@@ -34,7 +34,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ============================================================================
-# 2. OWNER MODE (SECURITY FIX: use st.secrets, not hardcoded key)
+# 2. OWNER MODE
 # ============================================================================
 OWNER_KEY = ""
 try:
@@ -42,16 +42,13 @@ try:
 except Exception:
     pass
 
-# Sticky session state
 owner_mode = st.session_state.get("_owner_verified", False)
 
-# Sidebar login
 if not owner_mode:
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 🔒 Owner Access")
     owner_input = st.sidebar.text_input("Enter Secret Key", type="password", key="owner_key_input")
-    
-    # Gate on non-empty so missing secret can't let "" == "" through
+
     if owner_input and OWNER_KEY and owner_input == OWNER_KEY:
         st.session_state["_owner_verified"] = True
         owner_mode = True
@@ -59,7 +56,6 @@ if not owner_mode:
     elif owner_input:
         st.sidebar.error("❌ Incorrect key")
 
-# URL param backup
 if not owner_mode:
     try:
         qp = st.query_params
@@ -73,7 +69,6 @@ if not owner_mode:
     except Exception:
         pass
 
-# Logout
 if owner_mode:
     if st.sidebar.button("Log out", key="_owner_logout"):
         st.session_state["_owner_verified"] = False
@@ -94,7 +89,6 @@ else:
     DEFAULT_WEEK = 1
     IS_OFFSEASON = False
 
-# Resolve actual season (may differ from requested due to fallback)
 ACTUAL_SEASON = resolve_season(DISPLAY_YEAR)
 
 st.sidebar.title("🏈 LaunchCast NFL")
@@ -140,23 +134,36 @@ with tab_games:
 
 with tab_patterns:
     st.header("🧠 Pattern Analysis")
-    st.caption("Which features actually predict winning props? (Requires accumulated weekly data)")
-    
+    st.caption("Which features actually predict winning props? Model outputs flagged ⚠️ and excluded from weight proposals.")
+
     if st.button("Run Pattern Analysis", type="primary"):
         with st.spinner("Analyzing patterns..."):
-            # FIX: run_pattern_analysis returns a tuple (summary_df, actual_season)
+            # Tuple return: (summary_df, actual_season)
             pattern_results, pattern_season = run_pattern_analysis(season=DISPLAY_YEAR, max_weeks=18)
-            
+
             if pattern_results is not None and not pattern_results.empty:
                 st.subheader("📊 Feature Correlations with TD Hits")
                 st.caption(f"Analysis based on {pattern_season} season data")
                 st.dataframe(pattern_results, hide_index=True, use_container_width=True)
-                
+
                 proposed = get_proposed_weights(pattern_results)
+
+                # COPY BUTTON (st.code, not st.json)
+                lines = [f"🧠 LAUNCHCAST NFL — PATTERN ANALYSIS",
+                         f"Season: {pattern_season} | Weeks: {int(pattern_results['Weeks Sampled'].max())}",
+                         "", f"{'Feature':<26}{'Corr':>8}{'StdDev':>9}{'Weeks':>7}", "-" * 50]
+                for _, r in pattern_results.iterrows():
+                    lines.append(f"{r['Feature']:<26}{r['Avg Correlation']:>+8.3f}"
+                                 f"{r['Std Dev']:>9.3f}{int(r['Weeks Sampled']):>7}")
+
                 if proposed:
-                    st.subheader("⚖️ Proposed Weight Adjustments")
-                    st.caption("Conservative ½-step adjustments based on evidence")
-                    st.json(proposed)
+                    lines += ["", "⚖️ PROPOSED WEIGHTS (½-step)", "-" * 50,
+                              f"{'Feature':<26}{'Current':>9}{'Evidence':>10}{'Target':>8}{'Apply':>8}"]
+                    for f, d in proposed.items():
+                        lines.append(f"{f:<26}{d['current']:>9.3f}{d['evidence']:>10.3f}"
+                                     f"{d['target']:>8.3f}{d['apply']:>8.3f}")
+
+                st.code("\n".join(lines), language="text")
             else:
                 st.info("Not enough data yet. Pattern analysis requires multiple weeks of accumulated results.")
 
@@ -168,13 +175,13 @@ with tab_owner:
         st.subheader("📈 Backtest")
         if st.button("Run Full Backtest", type="primary"):
             with st.spinner("Processing historical data..."):
-                # FIX: run_nfl_backtest returns a tuple (results_df, actual_season)
+                # Tuple return: (results_df, actual_season)
                 backtest_results, backtest_season = run_nfl_backtest(season=DISPLAY_YEAR, max_weeks=18)
-                
+
                 if not backtest_results.empty:
                     st.caption(f"Backtest based on {backtest_season} season data")
                     st.dataframe(backtest_results, hide_index=True, use_container_width=True)
-                    
+
                     col1, col2 = st.columns(2)
                     with col1:
                         avg_brier = backtest_results['Avg Brier (TD)'].mean()
@@ -182,10 +189,9 @@ with tab_owner:
                     with col2:
                         avg_hit = backtest_results['Hit Rate (TD)'].mean()
                         st.metric("Avg Hit Rate (TD)", f"{avg_hit:.1f}%")
-                        
+
                     st.divider()
                     st.subheader("📋 Copy Report")
-                    # FIX: Pass actual season to copy text generator
                     copy_text = generate_nfl_backtest_copy_text(backtest_results, season=backtest_season)
                     st.code(copy_text, language="text")
                 else:
