@@ -79,13 +79,15 @@ if owner_mode:
         st.rerun()
 
 # ============================================================================
-# 3. APP CONFIG (FIX: Offseason default is 2025, not 2024)
+# 3. APP CONFIG (FIX: Offseason default is 2024, not 2025)
 # ============================================================================
 CURRENT_YEAR = datetime.now().year
 CURRENT_MONTH = datetime.now().month
 
+# FIX: During offseason, use 2024 (most recent complete season)
+# 2025 data won't exist until after the 2025 season ends (Feb 2026)
 if CURRENT_MONTH < 9:
-    DISPLAY_YEAR = 2025  # FIXED: was 2024
+    DISPLAY_YEAR = 2024  # FIXED: was 2025
     DEFAULT_WEEK = 10
     IS_OFFSEASON = True
 else:
