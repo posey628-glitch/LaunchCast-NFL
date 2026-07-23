@@ -1,14 +1,20 @@
 # core/patterns.py
-# LaunchCast NFL — Pattern Analysis Engine V4 (Leakage-Free)
+# LaunchCast NFL — Pattern Analysis Engine V5
+# FIX: Same defensive merge pattern as fetcher and backtest
 
 import pandas as pd
 import numpy as np
-from data.fetcher import build_features_through, build_defensive_features_through, get_weekly_player_stats
+from data.fetcher import (
+    build_features_through, 
+    build_defensive_features_through, 
+    get_weekly_player_stats,
+    _load_weekly_raw,
+    normalize_columns
+)
 from core.scoring import generate_nfl_projections, BOOM_WEIGHTS
 
 # ============================================================================
-# TRACKED FEATURES (whitelist - derived from BOOM_WEIGHTS + defensive features)
-# CRITICAL: Only track features that actually exist in the data path
+# TRACKED FEATURES (whitelist)
 # ============================================================================
 TRACKED_FEATURES = [
     'target_share',
@@ -21,26 +27,39 @@ TRACKED_FEATURES = [
     'def_td_per_tgt',
 ]
 
-def run_pattern_analysis(season=2024, max_weeks=18):
+def run_pattern_analysis(season=2025, max_weeks=18):
     """
     Analyze which features correlate with actual TD hits.
-    FIX: Features from weeks 1 to N-1, outcomes from week N.
+    Features from weeks 1 to N-1, outcomes from week N.
     """
     correlations = []
     
-    for week in range(2, max_weeks + 1):  # Start at week 2
+    for week in range(2, max_weeks + 1):
         try:
             # Build features from weeks 1 to N-1 (NO LEAKAGE)
             features = build_features_through(week, season)
             if features.empty:
                 continue
             
-            # Build defensive features from weeks 1 to N-1
+            # FIX STEP 1: Attach this week's opponent FIRST
+            all_data = _load_weekly_raw(season)
+            all_data = normalize_columns(all_data)
+            week_n = all_data[all_data['week'] == week][['player_id', 'opponent_team']].drop_duplicates('player_id')
+            
+            if week_n.empty:
+                continue
+            
+            features = features.merge(week_n, on='player_id', how='inner')
+            if features.empty:
+                continue
+            
+            # FIX STEP 2: THEN attach the defense they FACE
             def_features = build_defensive_features_through(week, season)
             if not def_features.empty:
                 features = features.merge(
-                    def_features[['team', 'def_yds_per_tgt', 'def_td_per_tgt']],
-                    on='team',
+                    def_features[['team', 'def_yds_per_tgt', 'def_td_per_tgt']]
+                        .rename(columns={'team': 'opponent_team'}),
+                    on='opponent_team',
                     how='left'
                 )
             
@@ -57,7 +76,7 @@ def run_pattern_analysis(season=2024, max_weeks=18):
             actuals = actuals[['player_id', 'player_name', 'team', 'receiving_tds']].copy()
             actuals = actuals.rename(columns={'receiving_tds': 'actual_tds'}).fillna(0)
             
-            # Merge on player_id (NO LEAKAGE)
+            # Merge on player_id
             test_df = projections.merge(actuals, on=['player_id', 'player_name', 'team'], how='inner')
             test_df['hit_td'] = (test_df['actual_tds'] >= 1).astype(int)
             
@@ -97,7 +116,7 @@ def run_pattern_analysis(season=2024, max_weeks=18):
 def get_proposed_weights(pattern_results):
     """
     Based on pattern analysis, propose conservative weight adjustments.
-    FIX: Lower threshold so it actually fires, and use BOOM_WEIGHTS single source of truth.
+    Uses BOOM_WEIGHTS single source of truth.
     """
     if pattern_results.empty:
         return None
@@ -110,15 +129,15 @@ def get_proposed_weights(pattern_results):
         weeks = row['Weeks Sampled']
         
         # Only propose adjustments for features with enough evidence
-        if weeks >= 5 and abs(corr) >= 0.05:  # FIX: lowered from 0.10
+        if weeks >= 5 and abs(corr) >= 0.05:
             if feature in BOOM_WEIGHTS:
                 current = BOOM_WEIGHTS[feature]
                 # Scale adjustment to the weight itself
-                adjustment = current * corr * 0.5  # FIX: scale to weight
+                adjustment = current * corr * 0.5
                 new_weight = current + adjustment
                 new_weight = max(0.10, min(0.60, new_weight))
                 
-                if abs(new_weight - current) >= 0.005:  # FIX: lowered from 0.02
+                if abs(new_weight - current) >= 0.005:
                     proposed[feature] = {
                         'current': round(current, 2),
                         'proposed': round(new_weight, 2),
