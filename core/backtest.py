@@ -1,35 +1,59 @@
 # core/backtest.py
-# LaunchCast NFL — Backtesting Engine
+# LaunchCast NFL — Backtesting Engine V4 (Leakage-Free)
 
 import pandas as pd
 import numpy as np
-from data.fetcher import get_weekly_player_stats
+from data.fetcher import build_features_through, build_defensive_features_through, get_weekly_player_stats
 from core.scoring import generate_nfl_projections
 
-def run_nfl_backtest(season=2025, max_weeks=18):
-    """Runs the scoring engine on historical data and grades it."""
+def run_nfl_backtest(season=2024, max_weeks=18):
+    """
+    Runs the scoring engine on historical data and grades it.
+    FIX: Features from weeks 1 to N-1, outcomes from week N.
+    """
     results = []
     
-    for week in range(1, max_weeks + 1):
+    for week in range(2, max_weeks + 1):  # Start at week 2 (need week 1 for features)
         try:
-            raw_data = get_weekly_player_stats(week, year=season)
-            if raw_data.empty: continue
-                
-            projections = generate_nfl_projections(raw_data, current_week=week)
-            if projections.empty: continue
-                
-            actuals = raw_data[['player_name', 'team', 'receiving_tds', 'receiving_yards', 'receptions']].copy()
+            # Build features from weeks 1 to N-1 (NO LEAKAGE)
+            features = build_features_through(week, season)
+            if features.empty:
+                continue
+            
+            # Build defensive features from weeks 1 to N-1
+            def_features = build_defensive_features_through(week, season)
+            if not def_features.empty:
+                features = features.merge(
+                    def_features[['team', 'def_yds_per_tgt', 'def_td_per_tgt']],
+                    on='team',
+                    how='left'
+                )
+            
+            # Generate projections using historical features
+            projections = generate_nfl_projections(features, current_week=week)
+            if projections.empty:
+                continue
+            
+            # Get ACTUAL outcomes from week N (the week we're projecting)
+            actuals = get_weekly_player_stats(week, season)
+            if actuals.empty:
+                continue
+            
+            actuals = actuals[['player_id', 'player_name', 'team', 'receiving_tds', 'receiving_yards', 'receptions']].copy()
             actuals = actuals.rename(columns={
                 'receiving_tds': 'actual_tds',
                 'receiving_yards': 'actual_yards',
                 'receptions': 'actual_rec'
             }).fillna(0)
             
-            test_df = projections.merge(actuals, on=['player_name', 'team'], how='left', suffixes=('', '_actual')).fillna(0)
+            # Merge projections with actuals on player_id (NO LEAKAGE)
+            test_df = projections.merge(actuals, on=['player_id', 'player_name', 'team'], how='inner', suffixes=('', '_actual'))
             
+            # Calculate hits
             test_df['hit_td'] = (test_df['actual_tds'] >= 1).astype(int)
             test_df['hit_yards'] = (test_df['actual_yards'] > 45.5).astype(int)
             
+            # Calculate Brier scores
             test_df['brier_td'] = (test_df['prob_1plus_td'] - test_df['hit_td']) ** 2
             test_df['brier_yards'] = (test_df['prob_over_45.5_yds'] - test_df['hit_yards']) ** 2
             
@@ -42,7 +66,7 @@ def run_nfl_backtest(season=2025, max_weeks=18):
                 'Avg Brier (Yds)': round(test_df['brier_yards'].mean(), 4),
                 'Hit Rate (Yds)': round(test_df['hit_yards'].mean() * 100, 1),
             })
-        except Exception:
+        except Exception as e:
             continue
             
     return pd.DataFrame(results)
@@ -77,12 +101,13 @@ def generate_nfl_backtest_copy_text(results_df):
         
     lines.append("-" * 40)
     
-    best_week = results_df.loc[results_df['Avg Brier (TD)'].idxmin()]
-    worst_week = results_df.loc[results_df['Avg Brier (TD)'].idxmax()]
-    
-    lines.append("")
-    lines.append("🔍 KEY INSIGHTS")
-    lines.append(f"• Best Calibrated Week: Week {int(best_week['Week'])} (Brier: {best_week['Avg Brier (TD)']:.4f})")
-    lines.append(f"• Worst Calibrated Week: Week {int(worst_week['Week'])} (Brier: {worst_week['Avg Brier (TD)']:.4f})")
+    if len(results_df) > 0:
+        best_week = results_df.loc[results_df['Avg Brier (TD)'].idxmin()]
+        worst_week = results_df.loc[results_df['Avg Brier (TD)'].idxmax()]
+        
+        lines.append("")
+        lines.append("🔍 KEY INSIGHTS")
+        lines.append(f"• Best Calibrated Week: Week {int(best_week['Week'])} (Brier: {best_week['Avg Brier (TD)']:.4f})")
+        lines.append(f"• Worst Calibrated Week: Week {int(worst_week['Week'])} (Brier: {worst_week['Avg Brier (TD)']:.4f})")
     
     return "\n".join(lines)
