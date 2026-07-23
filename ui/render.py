@@ -1,5 +1,5 @@
 # ui/render.py
-# LaunchCast NFL — UI with TD Spike and Backtest Copy
+# LaunchCast NFL — V2 UI (Deep Dives & Game Browser)
 
 import streamlit as st
 import pandas as pd
@@ -40,10 +40,8 @@ def render_prop_leaderboard(projections_df, prop_type='td'):
     
     df = df.sort_values(sort_col, ascending=False)
     
-    # Add visual columns
     df['Grade'] = df.apply(lambda r: get_matchup_grade(r[sort_col], r['position']), axis=1)
     
-    # Check if td_spike column exists for the verdict
     is_spike_col = 'td_spike' in df.columns
     if is_spike_col:
         df['Verdict'] = df.apply(lambda r: get_verdict_emoji(r[sort_col], r.get('td_spike', False)), axis=1)
@@ -73,41 +71,70 @@ def render_prop_leaderboard(projections_df, prop_type='td'):
         use_container_width=True
     )
 
-def render_backtest_section(results_df):
-    """Renders the backtest table and the copy-paste text feature."""
-    if results_df.empty:
-        st.info("Run the backtest to see results.")
+def render_player_deep_dive(player_row):
+    """Renders a detailed card for a specific player."""
+    if player_row.empty:
         return
         
-    st.dataframe(results_df, hide_index=True, use_container_width=True)
+    row = player_row.iloc[0]
+    name = row.get('player_name', 'Unknown')
+    team = row.get('team', '')
+    opp = row.get('opponent_team', '')
+    pos = row.get('position', '')
     
-    col1, col2 = st.columns(2)
+    st.markdown(f"### 🔬 {name} ({pos} - {team}) vs {opp}")
+    
+    col1, col2, col3 = st.columns(3)
     with col1:
-        avg_brier = results_df['Avg Brier (TD)'].mean()
-        st.metric("Avg Brier Score (TD)", f"{avg_brier:.4f}", help="Lower is better. < 0.20 is good.")
+        st.metric("Proj Targets", f"{row.get('proj_targets', 0):.1f}")
+        st.metric("Proj Yards", f"{row.get('proj_rec_yards', 0):.0f}")
     with col2:
-        avg_hit = results_df['Hit Rate (TD)'].mean()
-        st.metric("Avg Hit Rate (TD)", f"{avg_hit:.1f}%")
+        st.metric("Proj TDs", f"{row.get('proj_tds', 0):.2f}")
+        st.metric("Boom Score", f"{row.get('boom_score', 0):.0f}")
+    with col3:
+        st.metric("P(1+ TD)", f"{row.get('prob_1plus_td', 0)*100:.1f}%")
+        st.metric("TD Lift", f"{row.get('td_lift', 0)*100:.1f}%")
         
-    st.divider()
-    st.subheader("📋 Copy Report")
-    st.caption("Click the copy icon in the top-right of the box below to paste this into notes or Discord.")
-    
-    # Import the text generator
-    from core.backtest import generate_nfl_backtest_copy_text
-    copy_text = generate_nfl_backtest_copy_text(results_df)
-    st.code(copy_text, language="text")
+    if row.get('td_spike', False):
+        st.success("🔥 **TD SPIKE DETECTED:** Elite matchup conditions align.")
 
-def render_nfl_dashboard(schedule, rosters, projections, is_offseason=False, display_year=2024):
+def render_game_browser(projections_df):
+    """Allows filtering by team to see specific game projections."""
+    st.subheader("🎮 Game-by-Game Browser")
+    
+    if projections_df.empty:
+        st.info("No data to browse.")
+        return
+        
+    teams = sorted(projections_df['team'].unique())
+    selected_team = st.selectbox("Select Team to View Matchup:", teams)
+    
+    game_data = projections_df[projections_df['team'] == selected_team].copy()
+    opp = game_data['opponent_team'].iloc[0] if not game_data.empty else "TBD"
+    
+    st.markdown(f"#### {selected_team} vs {opp}")
+    
+    # Deep Dive Selector
+    player_names = game_data['player_name'].tolist()
+    selected_player = st.selectbox("Select Player for Deep Dive:", ["None"] + player_names)
+    
+    if selected_player != "None":
+        player_row = game_data[game_data['player_name'] == selected_player]
+        render_player_deep_dive(player_row)
+        st.divider()
+        
+    # Show the table for this game
+    render_prop_leaderboard(game_data, prop_type='td')
+
+def render_nfl_dashboard(projections, is_offseason=False, display_year=2024):
     """Main dashboard."""
-    st.title(" LaunchCast NFL")
+    st.title("🏈 LaunchCast NFL")
     
     if is_offseason:
         st.caption(f"Evidence-based prop projections ({display_year} season data for testing). Live 2026 season starts September.")
     else:
         st.caption("Evidence-based prop projections powered by nflverse & Bayesian shrinkage.")
     
-    # Tabs
     tab_td, tab_yards, tab_rec = st.tabs(["🎯 Touchdowns", "📏 Receiving Yards", "🎯 Receptions"])
     
     with tab_td:
