@@ -1,16 +1,12 @@
 # core/scoring.py
-# LaunchCast NFL — Scoring Engine
-# Includes the "Boom Score" composite metric.
-# Fully defensive: handles missing columns safely.
+# LaunchCast NFL — Scoring Engine with TD Spike & TD Lift
 
 import pandas as pd
 import numpy as np
 from scipy.stats import poisson, norm
 
 def calculate_shrunk_rate(actual_rate, volume, current_week, league_avg_rate, position='WR'):
-    """
-    Shrinks a player's raw rate toward the league average based on sample size.
-    """
+    """Shrinks a player's raw rate toward the league average."""
     if current_week <= 3:
         prior_volume = 60
         weight_actual = 0.20
@@ -44,10 +40,7 @@ def calc_yardage_probability(expected_yards, prop_line, std_dev=22.0):
     return 1 - norm.cdf(z_score)
 
 def generate_nfl_projections(matchup_df, current_week):
-    """
-    Takes raw matchup_df and outputs projections.
-    Calculates the "Boom Score" composite.
-    """
+    """Takes raw matchup_df and outputs projections with TD Spike and TD Lift."""
     df = matchup_df.copy()
     
     LEAGUE_AVG_TARGET_SHARE = 0.20
@@ -80,31 +73,40 @@ def generate_nfl_projections(matchup_df, current_week):
         lambda row: 1 - poisson.cdf(3, row['proj_targets'] * 0.75), axis=1
     )
     
-    # Step 4: Calculate BOOM SCORE (Composite Metric)
-    # Boom Score = Weighted composite of Power, Matchup, and Form
-    # We use .get() with defaults to handle missing columns safely
+    # Step 4: TD LIFT (Context Lift)
+    # How much better is this week's TD probability compared to their season baseline?
+    # Baseline = League average TD rate applied to their shrunk target share
+    df['baseline_td_prob'] = (df['shrunk_target_share'] * TEAM_AVG_PASS_ATTEMPTS * LEAGUE_AVG_TD_RATE).apply(calc_td_probability)
+    df['td_lift'] = (df['prob_1plus_td'] - df['baseline_td_prob']).round(3)
     
-    # Power Component (40% weight)
-    power_score = df.get('barrel_pct', 0) * 0.4 + df.get('hard_hit', 0) * 0.3 + df.get('iso', 0) * 0.3
-    
-    # Matchup Component (40% weight)
-    matchup_score = df.get('target_share', 0) * 0.5 + df.get('adot', 0) * 0.3 + df.get('route_participation_pct', 0) * 0.2
-    
-    # Form Component (20% weight) - using recent stats if available
-    form_score = df.get('recent_hr', 0) * 0.5 + df.get('recent_iso', 0) * 0.5
-    
-    # Combine into Boom Score (0-100 scale)
-    df['boom_score'] = (power_score * 0.4 + matchup_score * 0.4 + form_score * 0.2).round(1)
+    # Step 5: TD SPIKE (Boom Spot)
+    # Identifies elite matchups where multiple factors align
+    # We use safe .get() because defensive stats might be missing
+    def calculate_td_spike(row):
+        # Base requirements: High TD probability and High Target Share
+        if row.get('prob_1plus_td', 0) < 0.20: return False
+        if row.get('target_share', 0) < 0.20: return False
+        
+        # If we have defensive data, require a bad matchup
+        opp_epa = row.get('opp_pass_epa_allowed', None)
+        if pd.notna(opp_epa):
+            # EPA > 0.0 means the defense allows more points than average
+            if opp_epa > 0.0: return True
+        else:
+            # Fallback if no defensive data: require very high volume
+            if row.get('target_share', 0) > 0.25: return True
+            
+        return False
+
+    df['td_spike'] = df.apply(calculate_td_spike, axis=1)
     
     # Return only the columns we need
     desired_cols = [
         'player_name', 'position', 'team', 'opponent_team',
         'proj_targets', 'proj_rec_yards', 'proj_tds',
         'prob_1plus_td', 'prob_over_45.5_yds', 'prob_over_3.5_rec',
-        'boom_score'
+        'td_lift', 'td_spike'
     ]
     
-    # Filter to only columns that exist
     valid_cols = [c for c in desired_cols if c in df.columns]
-    
     return df[valid_cols]
