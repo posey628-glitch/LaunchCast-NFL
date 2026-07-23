@@ -1,11 +1,11 @@
 # app.py
-# LaunchCast NFL — Main Entry Point
-# Fixed import: removed fit_isotonic_for_week (isotonic regression removed)
+# LaunchCast NFL — V8.3
+# FIX: Unpack tuple return from run_pattern_analysis
 
 import streamlit as st
 import pandas as pd
 from datetime import datetime
-from data.fetcher import build_matchup_matrix
+from data.fetcher import build_matchup_matrix, resolve_season
 from core.scoring import generate_nfl_projections
 from core.backtest import run_nfl_backtest, generate_nfl_backtest_copy_text
 from core.patterns import run_pattern_analysis, get_proposed_weights
@@ -80,15 +80,13 @@ if owner_mode:
         st.rerun()
 
 # ============================================================================
-# 3. APP CONFIG (FIX: Offseason default is 2024, not 2025)
+# 3. APP CONFIG
 # ============================================================================
 CURRENT_YEAR = datetime.now().year
 CURRENT_MONTH = datetime.now().month
 
-# FIX: During offseason, use 2024 (most recent complete season)
-# 2025 data won't exist until after the 2025 season ends (Feb 2026)
 if CURRENT_MONTH < 9:
-    DISPLAY_YEAR = 2024
+    DISPLAY_YEAR = 2025
     DEFAULT_WEEK = 10
     IS_OFFSEASON = True
 else:
@@ -96,9 +94,15 @@ else:
     DEFAULT_WEEK = 1
     IS_OFFSEASON = False
 
+# Resolve actual season (may differ from requested due to fallback)
+ACTUAL_SEASON = resolve_season(DISPLAY_YEAR)
+
 st.sidebar.title("🏈 LaunchCast NFL")
 if IS_OFFSEASON:
-    st.sidebar.warning(f"⚠️ **NFL Offseason**\n\nShowing {DISPLAY_YEAR} season data for testing.")
+    if ACTUAL_SEASON != DISPLAY_YEAR:
+        st.sidebar.warning(f"⚠️ **NFL Offseason**\n\n{DISPLAY_YEAR} unavailable, using {ACTUAL_SEASON} data.")
+    else:
+        st.sidebar.warning(f"⚠️ **NFL Offseason**\n\nShowing {ACTUAL_SEASON} season data for testing.")
 
 week_selector = st.sidebar.number_input("Select Week", min_value=1, max_value=18, value=DEFAULT_WEEK)
 
@@ -129,7 +133,7 @@ tab_main, tab_games, tab_patterns, tab_owner = st.tabs([
 ])
 
 with tab_main:
-    render_nfl_dashboard(projections, IS_OFFSEASON, DISPLAY_YEAR)
+    render_nfl_dashboard(projections, IS_OFFSEASON, ACTUAL_SEASON)
 
 with tab_games:
     render_game_browser(projections)
@@ -140,10 +144,12 @@ with tab_patterns:
     
     if st.button("Run Pattern Analysis", type="primary"):
         with st.spinner("Analyzing patterns..."):
-            pattern_results = run_pattern_analysis(season=DISPLAY_YEAR, max_weeks=18)
+            # FIX: run_pattern_analysis returns a tuple (summary_df, actual_season)
+            pattern_results, pattern_season = run_pattern_analysis(season=DISPLAY_YEAR, max_weeks=18)
             
             if pattern_results is not None and not pattern_results.empty:
                 st.subheader("📊 Feature Correlations with TD Hits")
+                st.caption(f"Analysis based on {pattern_season} season data")
                 st.dataframe(pattern_results, hide_index=True, use_container_width=True)
                 
                 proposed = get_proposed_weights(pattern_results)
@@ -162,8 +168,11 @@ with tab_owner:
         st.subheader("📈 Backtest")
         if st.button("Run Full Backtest", type="primary"):
             with st.spinner("Processing historical data..."):
-                backtest_results = run_nfl_backtest(season=DISPLAY_YEAR, max_weeks=18)
+                # FIX: run_nfl_backtest returns a tuple (results_df, actual_season)
+                backtest_results, backtest_season = run_nfl_backtest(season=DISPLAY_YEAR, max_weeks=18)
+                
                 if not backtest_results.empty:
+                    st.caption(f"Backtest based on {backtest_season} season data")
                     st.dataframe(backtest_results, hide_index=True, use_container_width=True)
                     
                     col1, col2 = st.columns(2)
@@ -176,7 +185,8 @@ with tab_owner:
                         
                     st.divider()
                     st.subheader("📋 Copy Report")
-                    copy_text = generate_nfl_backtest_copy_text(backtest_results, season=DISPLAY_YEAR)
+                    # FIX: Pass actual season to copy text generator
+                    copy_text = generate_nfl_backtest_copy_text(backtest_results, season=backtest_season)
                     st.code(copy_text, language="text")
                 else:
                     st.error("Backtest failed.")
