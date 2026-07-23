@@ -1,6 +1,6 @@
 # data/fetcher.py
-# LaunchCast NFL — Data Fetcher V7.2
-# FIX: Replace stale team with current team from week N before renormalization
+# LaunchCast NFL — Data Fetcher V7.3
+# FIX: Robust cascading fallback for HTTP 404 errors from nfl_data_py
 
 import pandas as pd
 import numpy as np
@@ -19,9 +19,26 @@ else:
 
 @st.cache_data(ttl=3600)
 def _load_weekly_raw(year: int) -> pd.DataFrame:
-    """Load raw weekly data once and cache it."""
+    """
+    Load raw weekly data once and cache it.
+    FIX: Automatically falls back to previous years if the requested year returns a 404.
+    """
     import nfl_data_py as nfl
-    return nfl.import_weekly_data([year])
+    
+    # Try the requested year, then the previous two years as fallbacks
+    for y in [year, year - 1, year - 2]:
+        try:
+            df = nfl.import_weekly_data([y])
+            if not df.empty:
+                if y != year:
+                    st.info(f"⚠️ {year} data unavailable, seamlessly falling back to {y}")
+                return df
+        except Exception:
+            # Catch 404s and other network errors silently and try the next year
+            continue
+            
+    st.error(f"❌ Failed to load weekly data for {year} and all fallbacks.")
+    return pd.DataFrame()
 
 def normalize_columns(df):
     """Normalize column names from nflverse to our standard names."""
@@ -45,11 +62,10 @@ def load_prior_rates_from_season(season: int) -> pd.DataFrame:
     """Load last season's per-player rates to use as priors for early weeks."""
     try:
         raw = _load_weekly_raw(season)
-        raw = normalize_columns(raw)
-        
         if raw.empty:
             return pd.DataFrame()
         
+        raw = normalize_columns(raw)
         groupby_cols = ['player_id', 'player_name', 'team']
         if 'position' in raw.columns:
             groupby_cols.append('position')
@@ -89,9 +105,7 @@ def load_prior_rates_from_season(season: int) -> pd.DataFrame:
         g = g.merge(team_vol[['team', 'prior_team_pass_att']], on='team', how='left')
         g['prior_team_pass_att'] = g['prior_team_pass_att'].fillna(35.0)
         
-        # FIX: Dedup traded players from last season
         g = g.drop_duplicates('player_id', keep='first')
-        
         return g
     except Exception as e:
         st.warning(f"Prior rates load failed: {e}")
@@ -101,8 +115,10 @@ def build_features_through(week: int, year: int, prior_rates: pd.DataFrame = Non
     """Build season-to-date player rates using ONLY weeks before `week`."""
     try:
         raw = _load_weekly_raw(year)
+        if raw.empty:
+            return pd.DataFrame()
+            
         raw = normalize_columns(raw)
-        
         hist = raw[raw['week'] < week]
         
         groupby_cols = ['player_id', 'player_name', 'team']
@@ -123,7 +139,6 @@ def build_features_through(week: int, year: int, prior_rates: pd.DataFrame = Non
             g['games'] = 0
             g['adot'] = 8.0
             g['routes'] = 0
-            # FIX: Dedup already done in load_prior_rates_from_season, but ensure it
             g = g.drop_duplicates('player_id', keep='first')
             return g
         
@@ -220,9 +235,7 @@ def build_features_through(week: int, year: int, prior_rates: pd.DataFrame = Non
                 g['prior_team_pass_att'].fillna(35.0)
             )
         
-        # FIX: Dedup traded players before returning
         g = g.sort_values('games', ascending=False).drop_duplicates('player_id', keep='first')
-        
         return g
     except Exception as e:
         st.warning(f"Feature build failed: {e}")
@@ -232,8 +245,10 @@ def build_defensive_features_through(week: int, year: int) -> pd.DataFrame:
     """Build season-to-date defensive stats using ONLY weeks before `week`."""
     try:
         raw = _load_weekly_raw(year)
+        if raw.empty:
+            return pd.DataFrame()
+            
         raw = normalize_columns(raw)
-        
         hist = raw[raw['week'] < week]
         
         if hist.empty:
@@ -277,8 +292,10 @@ def get_weekly_player_stats(week: int, year: int = None) -> pd.DataFrame:
     
     try:
         all_data = _load_weekly_raw(year)
+        if all_data.empty:
+            return pd.DataFrame()
+            
         week_data = all_data[all_data['week'] == week].copy()
-        
         if week_data.empty:
             return pd.DataFrame()
             
@@ -303,9 +320,10 @@ def build_matchup_matrix(week: int, year: int = None) -> pd.DataFrame:
     
     try:
         all_data = _load_weekly_raw(year)
+        if all_data.empty:
+            return pd.DataFrame()
+            
         all_data = normalize_columns(all_data)
-        
-        # FIX: Get current team AND opponent from week N
         week_n = all_data[all_data['week'] == week][
             ['player_id', 'team', 'opponent_team']
         ].drop_duplicates('player_id')
@@ -313,7 +331,6 @@ def build_matchup_matrix(week: int, year: int = None) -> pd.DataFrame:
         if week_n.empty:
             return pd.DataFrame()
         
-        # FIX: Drop stale team from features, merge current team from week N
         if 'team' in features.columns:
             features = features.drop(columns=['team'])
         
