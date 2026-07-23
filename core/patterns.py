@@ -1,6 +1,6 @@
 # core/patterns.py
-# LaunchCast NFL — Pattern Analysis Engine V7.1
-# FIX: Track both raw and shrunk versions to test shrinkage effectiveness
+# LaunchCast NFL — Pattern Analysis Engine V7.2
+# FIX: Replace stale team with current team from week N
 
 import pandas as pd
 import numpy as np
@@ -14,8 +14,6 @@ from data.fetcher import (
 )
 from core.scoring import generate_nfl_projections, BOOM_WEIGHTS
 
-# FIX: Track both raw and shrunk versions
-# This directly answers "is my shrinkage helping or hurting?"
 TRACKED_FEATURES = [
     'target_share', 'shrunk_target_share',
     'yds_per_tgt', 'shrunk_yds_per_tgt',
@@ -29,30 +27,33 @@ def run_pattern_analysis(season=2025, max_weeks=18):
     """Analyze which features correlate with actual TD hits."""
     correlations = []
     
-    # Load prior rates once for early weeks
     prior_rates = load_prior_rates_from_season(season - 1)
     
-    # Start at week 1 (now that it works)
     for week in range(1, max_weeks + 1):
         try:
-            # Build features (with prior rates for weeks 1-3)
             features = build_features_through(week, season, prior_rates=prior_rates if week <= 3 else None)
             if features.empty:
                 continue
             
-            # Attach opponent
             all_data = _load_weekly_raw(season)
             all_data = normalize_columns(all_data)
-            week_n = all_data[all_data['week'] == week][['player_id', 'opponent_team']].drop_duplicates('player_id')
+            
+            # FIX: Get current team AND opponent from week N
+            week_n = all_data[all_data['week'] == week][
+                ['player_id', 'team', 'opponent_team']
+            ].drop_duplicates('player_id')
             
             if week_n.empty:
                 continue
+            
+            # FIX: Drop stale team from features, merge current team from week N
+            if 'team' in features.columns:
+                features = features.drop(columns=['team'])
             
             features = features.merge(week_n, on='player_id', how='inner')
             if features.empty:
                 continue
             
-            # Attach defense
             def_features = build_defensive_features_through(week, season)
             if not def_features.empty:
                 features = features.merge(
@@ -62,12 +63,10 @@ def run_pattern_analysis(season=2025, max_weeks=18):
                     how='left'
                 )
             
-            # Generate projections
             projections = generate_nfl_projections(features, current_week=week)
             if projections.empty:
                 continue
             
-            # Get actuals
             actuals = get_weekly_player_stats(week, season)
             if actuals.empty:
                 continue
@@ -78,7 +77,6 @@ def run_pattern_analysis(season=2025, max_weeks=18):
             test_df = projections.merge(actuals, on=['player_id', 'player_name', 'team'], how='inner')
             test_df['hit_td'] = (test_df['actual_tds'] >= 1).astype(int)
             
-            # Calculate correlation of each feature with hit_td
             for feature in TRACKED_FEATURES:
                 if feature in test_df.columns:
                     feature_vals = pd.to_numeric(test_df[feature], errors='coerce').fillna(0)
