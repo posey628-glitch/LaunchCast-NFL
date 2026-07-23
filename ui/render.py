@@ -1,5 +1,5 @@
 # ui/render.py
-# LaunchCast NFL — V2 UI (Deep Dives & Game Browser)
+# LaunchCast NFL — UI V3
 
 import streamlit as st
 import pandas as pd
@@ -49,6 +49,11 @@ def render_prop_leaderboard(projections_df, prop_type='td'):
         df['Verdict'] = df[sort_col].apply(lambda p: get_verdict_emoji(p, False))
     
     display_cols = ['Verdict', 'player_name', 'position', 'team', 'opponent_team', 'Grade', stat_col, sort_col]
+    
+    # Add ctx_lift if available
+    if 'ctx_lift_pp' in df.columns:
+        display_cols.append('ctx_lift_pp')
+    
     display_cols = [c for c in display_cols if c in df.columns]
     
     col_config = {
@@ -60,6 +65,7 @@ def render_prop_leaderboard(projections_df, prop_type='td'):
         "Grade": st.column_config.TextColumn("GRADE", width="small"),
         stat_col: st.column_config.NumberColumn("PROJ", format="%.1f", width="small"),
         sort_col: st.column_config.ProgressColumn(label, min_value=0.0, max_value=1.0, format="%.0f%%", width="medium"),
+        "ctx_lift_pp": st.column_config.NumberColumn("Lift", format="%+.1f", help="Context lift vs player's own baseline"),
     }
     
     col_config = {k: v for k, v in col_config.items() if k in display_cols}
@@ -72,7 +78,6 @@ def render_prop_leaderboard(projections_df, prop_type='td'):
     )
 
 def render_player_deep_dive(player_row):
-    """Renders a detailed card for a specific player."""
     if player_row.empty:
         return
         
@@ -93,13 +98,12 @@ def render_player_deep_dive(player_row):
         st.metric("Boom Score", f"{row.get('boom_score', 0):.0f}")
     with col3:
         st.metric("P(1+ TD)", f"{row.get('prob_1plus_td', 0)*100:.1f}%")
-        st.metric("TD Lift", f"{row.get('td_lift', 0)*100:.1f}%")
+        st.metric("Ctx Lift", f"{row.get('ctx_lift_pp', 0):+.1f}pp")
         
     if row.get('td_spike', False):
         st.success("🔥 **TD SPIKE DETECTED:** Elite matchup conditions align.")
 
 def render_game_browser(projections_df):
-    """Allows filtering by team to see specific game projections."""
     st.subheader("🎮 Game-by-Game Browser")
     
     if projections_df.empty:
@@ -114,7 +118,6 @@ def render_game_browser(projections_df):
     
     st.markdown(f"#### {selected_team} vs {opp}")
     
-    # Deep Dive Selector
     player_names = game_data['player_name'].tolist()
     selected_player = st.selectbox("Select Player for Deep Dive:", ["None"] + player_names)
     
@@ -123,11 +126,9 @@ def render_game_browser(projections_df):
         render_player_deep_dive(player_row)
         st.divider()
         
-    # Show the table for this game
     render_prop_leaderboard(game_data, prop_type='td')
 
-def render_nfl_dashboard(projections, is_offseason=False, display_year=2024):
-    """Main dashboard."""
+def render_nfl_dashboard(projections, is_offseason=False, display_year=2025):
     st.title("🏈 LaunchCast NFL")
     
     if is_offseason:
