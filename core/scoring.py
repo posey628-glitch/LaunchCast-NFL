@@ -37,7 +37,18 @@ DEF_BLEND = 0.0
 PRIOR_TARGET_SHARE_EARLY = 15   # weeks 1-3
 PRIOR_TARGET_SHARE_MID = 10     # weeks 4-10
 PRIOR_TARGET_SHARE_LATE = 5     # weeks 11+
-PRIOR_TD_RATE = 90              # TD rate stabilises slowly
+# EXPERIMENT IN PROGRESS (was 90).
+# Removing DEF_BLEND cost a layer of hidden shrinkage: blending 40% toward a
+# defense rate near the league mean was quietly pulling elite TD rates down.
+# The calibration gap widened +1.0pp -> +1.6pp as a result. This raises the
+# prior directly instead, which does the same job honestly.
+#   Baseline to beat (DEF_BLEND=0.0, PRIOR_TD_RATE=90):
+#       TD edge +17.8pp | lift 2.27x | Brier 0.1138 | calibration gap +1.6pp
+#   KEEP 120 only if the gap closes toward +1.0pp AND edge holds near +17.8pp.
+#   REVERT to 90 if edge drops — separation is worth more than a centred mean.
+# NOTE: this app's own data showed shrinkage DESTROYED 25% of target share's
+# signal, so more shrinkage is not automatically better. Let the number decide.
+PRIOR_TD_RATE = 120             # TD rate stabilises slowly
 PRIOR_YDS_RATE = 35             # yards/target stabilises faster
 
 # ============================================================================
