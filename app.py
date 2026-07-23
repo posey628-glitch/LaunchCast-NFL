@@ -1,6 +1,6 @@
 # app.py
-# LaunchCast NFL — V7.4
-# FIX: Handle tuple returns from backtest/patterns, pass actual season to copy text
+# LaunchCast NFL — V8.2
+# FIX: Display Model_Output flag in pattern analysis
 
 import streamlit as st
 import pandas as pd
@@ -8,7 +8,7 @@ from datetime import datetime
 from data.fetcher import build_matchup_matrix, resolve_season
 from core.scoring import generate_nfl_projections
 from core.backtest import run_nfl_backtest, generate_nfl_backtest_copy_text
-from core.patterns import run_pattern_analysis, get_proposed_weights
+from core.patterns import run_pattern_analysis, get_proposed_weights, MODEL_OUTPUT_FEATURES
 from ui.render import render_nfl_dashboard, render_game_browser, render_player_deep_dive
 
 # ============================================================================
@@ -89,7 +89,6 @@ else:
     DEFAULT_WEEK = 1
     IS_OFFSEASON = False
 
-# FIX: Resolve actual season for display
 ACTUAL_SEASON = resolve_season(DISPLAY_YEAR)
 
 st.sidebar.title("🏈 LaunchCast NFL")
@@ -135,28 +134,41 @@ with tab_games:
 
 with tab_patterns:
     st.header("🧠 Pattern Analysis")
-    st.caption("Which features actually predict winning props? (Requires accumulated weekly data)")
+    st.caption("Which features actually predict winning props? Model outputs are flagged ⚠️ and excluded from weight proposals.")
     
     if st.button("Run Pattern Analysis", type="primary"):
         with st.spinner("Analyzing patterns..."):
-            # FIX: Handle tuple return
             pattern_results, actual_season = run_pattern_analysis(season=DISPLAY_YEAR, max_weeks=18)
             
             if pattern_results is not None and not pattern_results.empty:
                 st.subheader("📊 Feature Correlations with TD Hits")
-                st.dataframe(pattern_results, hide_index=True, use_container_width=True)
+                
+                # Display with Model_Output flag visible
+                display_df = pattern_results.copy()
+                display_df['Notes'] = display_df['Model_Output'].apply(
+                    lambda x: "⚠️ Model output (excluded from weights)" if x else "✅ Raw feature"
+                )
+                
+                st.dataframe(
+                    display_df[['Feature', 'Notes', 'Avg Correlation', 'Std Dev', 'Weeks Sampled']],
+                    hide_index=True,
+                    use_container_width=True
+                )
                 
                 # Copy button with ACTUAL season
                 lines = [f"🧠 LAUNCHCAST NFL — PATTERN ANALYSIS",
                          f"Season: {actual_season} | Weeks: {int(pattern_results['Weeks Sampled'].max())}",
-                         "", f"{'Feature':<26}{'Corr':>8}{'StdDev':>9}{'Weeks':>7}", "-"*50]
+                         "",
+                         f"{'Feature':<26}{'Type':<10}{'Corr':>8}{'StdDev':>9}{'Weeks':>7}",
+                         "-"*60]
                 for _, r in pattern_results.iterrows():
-                    lines.append(f"{r['Feature']:<26}{r['Avg Correlation']:>+8.3f}"
+                    feat_type = "MODEL" if r['Model_Output'] else "RAW"
+                    lines.append(f"{r['Feature']:<26}{feat_type:<10}{r['Avg Correlation']:>+8.3f}"
                                  f"{r['Std Dev']:>9.3f}{int(r['Weeks Sampled']):>7}")
                 
                 proposed = get_proposed_weights(pattern_results)
                 if proposed:
-                    lines += ["", "⚖️ PROPOSED WEIGHTS (½-step)", "-"*50,
+                    lines += ["", "⚖️ PROPOSED WEIGHTS (½-step, model outputs excluded)", "-"*60,
                               f"{'Feature':<26}{'Current':>9}{'Evidence':>10}{'Target':>8}{'Apply':>8}"]
                     for f, d in proposed.items():
                         lines.append(f"{f:<26}{d['current']:>9.3f}{d['evidence']:>10.3f}"
@@ -174,7 +186,6 @@ with tab_owner:
         st.subheader("📈 Backtest")
         if st.button("Run Full Backtest", type="primary"):
             with st.spinner("Processing historical data..."):
-                # FIX: Handle tuple return
                 backtest_results, actual_season = run_nfl_backtest(season=DISPLAY_YEAR, max_weeks=18)
                 
                 if not backtest_results.empty:
@@ -190,7 +201,6 @@ with tab_owner:
                         
                     st.divider()
                     st.subheader("📋 Copy Report")
-                    # FIX: Pass ACTUAL season to copy text generator
                     copy_text = generate_nfl_backtest_copy_text(backtest_results, season=actual_season)
                     st.code(copy_text, language="text")
                 else:
