@@ -44,7 +44,7 @@ def run_nfl_backtest(season=2024, max_weeks=18):
             
     return pd.DataFrame(results)
 
-def generate_backtest_copy_text(results_df):
+def generate_nfl_backtest_copy_text(results_df):
     """Generates a clean, copy-pasteable text report of the backtest results."""
     if results_df.empty:
         return "No backtest data available."
