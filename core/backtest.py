@@ -1,6 +1,6 @@
 # core/backtest.py
-# LaunchCast NFL — Backtesting Engine V7
-# ADDS: Edge metrics (Top20 Hit %, Slate Base %, Edge, Lift)
+# LaunchCast NFL — Backtesting Engine V7.1
+# FIX: Start at week 1 (now that Week 1 works)
 
 import pandas as pd
 import numpy as np
@@ -18,13 +18,15 @@ def run_nfl_backtest(season=2025, max_weeks=18):
     """
     Runs the scoring engine on historical data and grades it.
     Includes edge metrics: Top20 hit rate vs slate base rate.
+    FIX: Start at week 1 (not week 2) since Week 1 now works.
     """
     results = []
     
     # Load prior rates once for early weeks
     prior_rates = load_prior_rates_from_season(season - 1)
     
-    for week in range(2, max_weeks + 1):
+    # FIX: Start at week 1 (was week 2)
+    for week in range(1, max_weeks + 1):
         try:
             # Build features (with prior rates for weeks 1-3)
             features = build_features_through(week, season, prior_rates=prior_rates if week <= 3 else None)
@@ -80,7 +82,7 @@ def run_nfl_backtest(season=2025, max_weeks=18):
             test_df['brier_td'] = (test_df['prob_1plus_td'] - test_df['hit_td']) ** 2
             test_df['brier_yards'] = (test_df['prob_over_45.5_yds'] - test_df['hit_yards']) ** 2
             
-            # ADD: Edge metrics
+            # Edge metrics
             test_df_sorted = test_df.sort_values('prob_1plus_td', ascending=False)
             top20 = test_df_sorted.head(20)
             base_rate = test_df['hit_td'].mean()
@@ -94,7 +96,6 @@ def run_nfl_backtest(season=2025, max_weeks=18):
                 'Avg Prob (TD)': round(test_df['prob_1plus_td'].mean() * 100, 1),
                 'Avg Brier (Yds)': round(test_df['brier_yards'].mean(), 4),
                 'Hit Rate (Yds)': round(test_df['hit_yards'].mean() * 100, 1),
-                # NEW: Edge metrics
                 'Top20 Hit %': round(top20_rate * 100, 1),
                 'Slate Base %': round(base_rate * 100, 1),
                 'Edge (pp)': round((top20_rate - base_rate) * 100, 1),
@@ -122,7 +123,6 @@ def generate_nfl_backtest_copy_text(results_df):
     lines.append(f"Overall Hit Rate (TD):  {avg_hit:.1f}%")
     lines.append(f"Overall Avg Prob (TD):  {avg_prob:.1f}%")
     
-    # ADD: Edge metrics summary
     if 'Top20 Hit %' in results_df.columns:
         avg_top20 = results_df['Top20 Hit %'].mean()
         avg_base = results_df['Slate Base %'].mean()
