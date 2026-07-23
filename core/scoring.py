@@ -1,15 +1,20 @@
 # core/scoring.py
-# LaunchCast NFL — Scoring Engine V8.1
-# FIX: Loosen prior_volume from 40/20 to 15/10 to preserve signal
+# LaunchCast NFL — Scoring Engine V8.2
+# FIX: BOOM_WEIGHTS keys now match what calc_boom_score actually uses
+# FIX: Loosened priors to 5/3/2 (was 15/10/5)
 
 import pandas as pd
 import numpy as np
 from scipy.stats import poisson, norm
 
+# FIX: Keys renamed to match what calc_boom_score actually multiplies
+# target_share → raw target_share (corr +0.283)
+# shrunk_yds_per_tgt → shrunk version (corr -0.105, anti-predictor)
+# shrunk_td_per_tgt → shrunk version (corr +0.085)
 BOOM_WEIGHTS = {
     'target_share': 0.40,
-    'yds_per_tgt': 0.30,
-    'td_per_tgt': 0.30,
+    'shrunk_yds_per_tgt': 0.30,
+    'shrunk_td_per_tgt': 0.30,
 }
 
 LEAGUE_AVG_TARGET_SHARE = 0.11
@@ -20,18 +25,15 @@ LEAGUE_AVG_PASS_ATTEMPTS = 35.0
 def calculate_shrunk_rate(actual_rate, volume, current_week, league_avg_rate, position='WR'):
     """
     Standard Bayesian shrinkage: weight = volume / (volume + prior).
-    
-    FIX: Loosened priors from 40/20 to 15/10.
-    The correlation table showed raw target_share (+0.283) beats shrunk (+0.211),
-    meaning our priors were too strong and compressing signal.
+    FIX: Loosened priors to 5/3/2 (was 15/10/5, originally 40/20).
     """
-    # FIX: Loosened priors
+    # FIX: Further loosened priors
     if current_week <= 3:
-        prior_volume = 15  # was 60
+        prior_volume = 5   # was 15
     elif current_week <= 10:
-        prior_volume = 10  # was 40
+        prior_volume = 3   # was 10
     else:
-        prior_volume = 5   # was 20
+        prior_volume = 2   # was 5
 
     if volume <= 0:
         return league_avg_rate
@@ -72,15 +74,19 @@ def calc_yardage_probability(expected_yards, prop_line, proj_targets):
     return 1 - norm.cdf(z_score)
 
 def calc_boom_score(row):
-    """Composite power/volume metric (0-100 scale)."""
+    """
+    Composite power/volume metric (0-100 scale).
+    Uses the same column names as BOOM_WEIGHTS keys.
+    """
+    # FIX: Use the same column names as BOOM_WEIGHTS keys
     vol = min(1.0, row.get('target_share', 0) / 0.30)
     eff = min(1.0, row.get('shrunk_yds_per_tgt', 11.0) / 15.0)
     rz  = min(1.0, row.get('shrunk_td_per_tgt', 0.05) / 0.10)
 
     total_w = sum(BOOM_WEIGHTS.values()) or 1.0
     score = (vol * BOOM_WEIGHTS['target_share']
-             + eff * BOOM_WEIGHTS['yds_per_tgt']
-             + rz  * BOOM_WEIGHTS['td_per_tgt']) / total_w
+             + eff * BOOM_WEIGHTS['shrunk_yds_per_tgt']
+             + rz  * BOOM_WEIGHTS['shrunk_td_per_tgt']) / total_w
 
     return round(score * 100, 1)
 
@@ -100,7 +106,7 @@ def generate_nfl_projections(matchup_df, current_week):
     """Takes raw matchup_df and outputs projections."""
     df = matchup_df.copy()
     
-    # Shrunk target share (with loosened priors)
+    # Shrunk target share (with further loosened priors)
     df['shrunk_target_share'] = df.apply(
         lambda row: calculate_shrunk_rate(
             row.get('target_share', 0),
@@ -166,7 +172,7 @@ def generate_nfl_projections(matchup_df, current_week):
         lambda row: 1 - poisson.cdf(3, row['proj_targets'] * 0.75), axis=1
     )
     
-    # Boom Score
+    # Boom Score (now uses correct column names)
     df['boom_score'] = df.apply(calc_boom_score, axis=1)
     
     # TD Spike
