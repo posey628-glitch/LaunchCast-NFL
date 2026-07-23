@@ -1,7 +1,8 @@
 # core/scoring.py
-# LaunchCast NFL — Scoring Engine V8.3
-# Isotonic regression removed (was leaky in backtest loops).
-# Normal distribution fallback retained.
+# LaunchCast NFL — Scoring Engine V8.4
+# REWEIGHTED BOOM_WEIGHTS (earned from 18 weeks of pattern analysis)
+# Correct key names matching what calc_boom_score actually multiplies
+# No isotonic regression (removed — was leaky in backtest loops)
 
 import pandas as pd
 import numpy as np
@@ -9,11 +10,16 @@ from scipy.stats import poisson, norm
 
 # ============================================================================
 # SINGLE SOURCE OF TRUTH: BOOM WEIGHTS
+# Reweighted based on 18 weeks of evidence:
+# - target_share: +0.283 correlation, std 0.051 (strong, stable)
+# - shrunk_yds_per_tgt: -0.105 correlation (anti-predictor, demoted)
+# - shrunk_td_per_tgt: +0.085 correlation (modest positive)
+# Keys MUST match what calc_boom_score reads from the row.
 # ============================================================================
 BOOM_WEIGHTS = {
-    'target_share': 0.40,
-    'yds_per_tgt': 0.30,
-    'td_per_tgt': 0.30,
+    'target_share': 0.585,
+    'shrunk_yds_per_tgt': 0.150,
+    'shrunk_td_per_tgt': 0.265,
 }
 
 # League averages
@@ -65,10 +71,7 @@ def calc_td_probability(expected_tds):
     return 1 - prob_zero_tds
 
 def calc_yardage_probability(expected_yards, prop_line, proj_targets):
-    """
-    Calculates P(Over prop_line Yards) using Normal distribution.
-    std_dev scales with projected volume (more targets = more variance).
-    """
+    """Calculates P(Over prop_line Yards) using Normal distribution."""
     if expected_yards <= 0:
         return 0.0
 
@@ -82,15 +85,19 @@ def calc_yardage_probability(expected_yards, prop_line, proj_targets):
 # COMPOSITE CALCULATORS
 # ============================================================================
 def calc_boom_score(row):
-    """Composite power/volume metric (0-100 scale)."""
+    """
+    Composite power/volume metric (0-100 scale).
+    Keys MUST match BOOM_WEIGHTS keys exactly.
+    """
+    # These column names MUST match BOOM_WEIGHTS keys
     vol = min(1.0, row.get('target_share', 0) / 0.30)
     eff = min(1.0, row.get('shrunk_yds_per_tgt', 11.0) / 15.0)
     rz  = min(1.0, row.get('shrunk_td_per_tgt', 0.05) / 0.10)
 
     total_w = sum(BOOM_WEIGHTS.values()) or 1.0
     score = (vol * BOOM_WEIGHTS['target_share']
-             + eff * BOOM_WEIGHTS['yds_per_tgt']
-             + rz  * BOOM_WEIGHTS['td_per_tgt']) / total_w
+             + eff * BOOM_WEIGHTS['shrunk_yds_per_tgt']
+             + rz  * BOOM_WEIGHTS['shrunk_td_per_tgt']) / total_w
 
     return round(score * 100, 1)
 
@@ -98,12 +105,12 @@ def calc_ctx_lift(row):
     """Context Lift: how much does tonight's matchup move the player off his norm?"""
     proj_tgt = row.get('proj_targets', 0)
     own_rate = row.get('shrunk_td_per_tgt', LEAGUE_AVG_TD_PER_TGT)
-    
+
     baseline_expected_tds = proj_tgt * own_rate
     baseline_prob = calc_td_probability(baseline_expected_tds)
-    
+
     this_week_prob = row.get('prob_1plus_td', 0)
-    
+
     return round((this_week_prob - baseline_prob) * 100, 1)
 
 # ============================================================================
@@ -112,7 +119,7 @@ def calc_ctx_lift(row):
 def generate_nfl_projections(matchup_df, current_week):
     """Takes raw matchup_df and outputs projections."""
     df = matchup_df.copy()
-    
+
     # Shrunk target share
     df['shrunk_target_share'] = df.apply(
         lambda row: calculate_shrunk_rate(
@@ -123,7 +130,7 @@ def generate_nfl_projections(matchup_df, current_week):
             row.get('position', 'WR')
         ), axis=1
     )
-    
+
     # Renormalize so each team's target shares sum to 1.0
     _team_sum = df.groupby('team')['shrunk_target_share'].transform('sum')
     df['shrunk_target_share'] = np.where(
@@ -131,7 +138,7 @@ def generate_nfl_projections(matchup_df, current_week):
         df['shrunk_target_share'] / _team_sum,
         0
     )
-    
+
     # Shrunk rates
     df['shrunk_yds_per_tgt'] = df.apply(
         lambda row: shrink_yds_rate(
@@ -139,36 +146,36 @@ def generate_nfl_projections(matchup_df, current_week):
             row.get('targets', 0)
         ), axis=1
     )
-    
+
     df['shrunk_td_per_tgt'] = df.apply(
         lambda row: shrink_td_rate(
             row.get('td_per_tgt', LEAGUE_AVG_TD_PER_TGT),
             row.get('targets', 0)
         ), axis=1
     )
-    
+
     # Base Projections
     df['team_avg_pass_attempts'] = df.get('team_avg_pass_attempts', TEAM_AVG_PASS_ATTEMPTS)
     if isinstance(df['team_avg_pass_attempts'], (int, float)):
         df['team_avg_pass_attempts'] = TEAM_AVG_PASS_ATTEMPTS
-    
+
     df['proj_targets'] = (df['shrunk_target_share'] * df['team_avg_pass_attempts']).round(1)
     df['proj_rec_yards'] = (df['proj_targets'] * df['shrunk_yds_per_tgt']).round(1)
-    
+
     # TD projection
     def calc_proj_tds(row):
         player_td_rate = row.get('shrunk_td_per_tgt', LEAGUE_AVG_TD_PER_TGT)
         def_td_rate = row.get('def_td_per_tgt', LEAGUE_AVG_TD_PER_TGT)
-        
+
         if pd.notna(def_td_rate) and def_td_rate > 0:
             blended_rate = (0.6 * player_td_rate) + (0.4 * def_td_rate)
         else:
             blended_rate = player_td_rate
-        
+
         return row['proj_targets'] * blended_rate
-    
+
     df['proj_tds'] = df.apply(calc_proj_tds, axis=1).round(2)
-    
+
     # Prop Probabilities
     df['prob_1plus_td'] = df['proj_tds'].apply(calc_td_probability)
     df['prob_over_45.5_yds'] = df.apply(
@@ -178,10 +185,10 @@ def generate_nfl_projections(matchup_df, current_week):
     df['prob_over_3.5_rec'] = df.apply(
         lambda row: 1 - poisson.cdf(3, row['proj_targets'] * 0.75), axis=1
     )
-    
-    # Boom Score
+
+    # Boom Score (uses reweighted BOOM_WEIGHTS with correct key names)
     df['boom_score'] = df.apply(calc_boom_score, axis=1)
-    
+
     # TD Spike
     def calc_td_spike(row):
         if (row.get('prob_1plus_td', 0) >= 0.20 and
@@ -190,10 +197,10 @@ def generate_nfl_projections(matchup_df, current_week):
             return True
         return False
     df['td_spike'] = df.apply(calc_td_spike, axis=1)
-    
+
     # CTX LIFT
     df['ctx_lift_pp'] = df.apply(calc_ctx_lift, axis=1)
-    
+
     # Return columns
     desired_cols = [
         'player_id', 'player_name', 'position', 'team', 'opponent_team',
@@ -206,6 +213,6 @@ def generate_nfl_projections(matchup_df, current_week):
         'adot', 'routes', 'team_avg_pass_attempts',
         'def_yds_per_tgt', 'def_td_per_tgt'
     ]
-    
+
     valid_cols = [c for c in desired_cols if c in df.columns]
     return df[valid_cols]
