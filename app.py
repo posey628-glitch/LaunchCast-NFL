@@ -1,5 +1,7 @@
 # app.py
-# LaunchCast NFL — V3 (All bugs fixed, learning loop added)
+# LaunchCast NFL — V8.2
+# FIX: Pass DISPLAY_YEAR to generate_nfl_backtest_copy_text
+# FIX: Add copy button for pattern analysis
 
 import streamlit as st
 import pandas as pd
@@ -33,7 +35,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ============================================================================
-# 2. OWNER MODE (SECURITY FIX: use st.secrets, not hardcoded key)
+# 2. OWNER MODE
 # ============================================================================
 OWNER_KEY = ""
 try:
@@ -41,16 +43,13 @@ try:
 except Exception:
     pass
 
-# Sticky session state
 owner_mode = st.session_state.get("_owner_verified", False)
 
-# Sidebar login
 if not owner_mode:
     st.sidebar.markdown("---")
     st.sidebar.markdown("### 🔒 Owner Access")
     owner_input = st.sidebar.text_input("Enter Secret Key", type="password", key="owner_key_input")
     
-    # Gate on non-empty so missing secret can't let "" == "" through
     if owner_input and OWNER_KEY and owner_input == OWNER_KEY:
         st.session_state["_owner_verified"] = True
         owner_mode = True
@@ -58,7 +57,6 @@ if not owner_mode:
     elif owner_input:
         st.sidebar.error("❌ Incorrect key")
 
-# URL param backup
 if not owner_mode:
     try:
         qp = st.query_params
@@ -72,22 +70,19 @@ if not owner_mode:
     except Exception:
         pass
 
-# Logout
 if owner_mode:
     if st.sidebar.button("Log out", key="_owner_logout"):
         st.session_state["_owner_verified"] = False
         st.rerun()
 
 # ============================================================================
-# 3. APP CONFIG (FIX: Offseason default is 2024, not 2025)
+# 3. APP CONFIG
 # ============================================================================
 CURRENT_YEAR = datetime.now().year
 CURRENT_MONTH = datetime.now().month
 
-# FIX: During offseason, use 2024 (most recent complete season)
-# 2025 data won't exist until after the 2025 season ends (Feb 2026)
 if CURRENT_MONTH < 9:
-    DISPLAY_YEAR = 2024  # FIXED: was 2025
+    DISPLAY_YEAR = 2025
     DEFAULT_WEEK = 10
     IS_OFFSEASON = True
 else:
@@ -145,11 +140,23 @@ with tab_patterns:
                 st.subheader("📊 Feature Correlations with TD Hits")
                 st.dataframe(pattern_results, hide_index=True, use_container_width=True)
                 
+                # FIX: Add copy button for pattern analysis
+                lines = [f"🧠 LAUNCHCAST NFL — PATTERN ANALYSIS",
+                         f"Season: {DISPLAY_YEAR} | Weeks: {int(pattern_results['Weeks Sampled'].max())}",
+                         "", f"{'Feature':<26}{'Corr':>8}{'StdDev':>9}{'Weeks':>7}", "-"*50]
+                for _, r in pattern_results.iterrows():
+                    lines.append(f"{r['Feature']:<26}{r['Avg Correlation']:>+8.3f}"
+                                 f"{r['Std Dev']:>9.3f}{int(r['Weeks Sampled']):>7}")
+                
                 proposed = get_proposed_weights(pattern_results)
                 if proposed:
-                    st.subheader("⚖️ Proposed Weight Adjustments")
-                    st.caption("Conservative ½-step adjustments based on evidence")
-                    st.json(proposed)
+                    lines += ["", "⚖️ PROPOSED WEIGHTS (½-step)", "-"*50,
+                              f"{'Feature':<26}{'Current':>9}{'Evidence':>10}{'Target':>8}{'Apply':>8}"]
+                    for f, d in proposed.items():
+                        lines.append(f"{f:<26}{d['current']:>9.3f}{d['evidence']:>10.3f}"
+                                     f"{d['target']:>8.3f}{d['apply']:>8.3f}")
+                
+                st.code("\n".join(lines), language="text")
             else:
                 st.info("Not enough data yet. Pattern analysis requires multiple weeks of accumulated results.")
 
@@ -175,7 +182,8 @@ with tab_owner:
                         
                     st.divider()
                     st.subheader("📋 Copy Report")
-                    copy_text = generate_nfl_backtest_copy_text(backtest_results)
+                    # FIX: Pass DISPLAY_YEAR to the copy text generator
+                    copy_text = generate_nfl_backtest_copy_text(backtest_results, season=DISPLAY_YEAR)
                     st.code(copy_text, language="text")
                 else:
                     st.error("Backtest failed.")
