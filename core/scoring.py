@@ -1,33 +1,41 @@
 # core/scoring.py
-# LaunchCast NFL — Scoring Engine V7
-# FIX: Use team-specific pass volume instead of constant 35
+# LaunchCast NFL — Scoring Engine V8.1
+# FIX: Loosen prior_volume from 40/20 to 15/10 to preserve signal
 
 import pandas as pd
 import numpy as np
 from scipy.stats import poisson, norm
 
-# ============================================================================
-# SINGLE SOURCE OF TRUTH: BOOM WEIGHTS
-# ============================================================================
 BOOM_WEIGHTS = {
     'target_share': 0.40,
     'yds_per_tgt': 0.30,
     'td_per_tgt': 0.30,
 }
 
-# League averages
 LEAGUE_AVG_TARGET_SHARE = 0.11
 LEAGUE_AVG_YDS_PER_TGT = 11.0
 LEAGUE_AVG_TD_PER_TGT = 0.05
-LEAGUE_AVG_PASS_ATTEMPTS = 35.0  # Fallback only
+LEAGUE_AVG_PASS_ATTEMPTS = 35.0
 
-# ============================================================================
-# BAYESIAN SHRINKAGE FUNCTIONS
-# ============================================================================
-def calculate_shrunk_rate(actual_rate, volume, prior_volume, league_avg_rate):
-    """Standard Bayesian shrinkage."""
+def calculate_shrunk_rate(actual_rate, volume, current_week, league_avg_rate, position='WR'):
+    """
+    Standard Bayesian shrinkage: weight = volume / (volume + prior).
+    
+    FIX: Loosened priors from 40/20 to 15/10.
+    The correlation table showed raw target_share (+0.283) beats shrunk (+0.211),
+    meaning our priors were too strong and compressing signal.
+    """
+    # FIX: Loosened priors
+    if current_week <= 3:
+        prior_volume = 15  # was 60
+    elif current_week <= 10:
+        prior_volume = 10  # was 40
+    else:
+        prior_volume = 5   # was 20
+
     if volume <= 0:
         return league_avg_rate
+
     f = volume / (volume + prior_volume)
     return f * actual_rate + (1 - f) * league_avg_rate
 
@@ -45,9 +53,6 @@ def shrink_yds_rate(actual, targets, league_avg=LEAGUE_AVG_YDS_PER_TGT, prior=35
     f = targets / (targets + prior)
     return f * actual + (1 - f) * league_avg
 
-# ============================================================================
-# PROBABILITY CALCULATORS
-# ============================================================================
 def calc_td_probability(expected_tds):
     """Calculates P(1+ TD) using Poisson distribution."""
     if expected_tds <= 0:
@@ -66,9 +71,6 @@ def calc_yardage_probability(expected_yards, prop_line, proj_targets):
     z_score = (prop_line - expected_yards) / std_dev
     return 1 - norm.cdf(z_score)
 
-# ============================================================================
-# BOOM SCORE
-# ============================================================================
 def calc_boom_score(row):
     """Composite power/volume metric (0-100 scale)."""
     vol = min(1.0, row.get('target_share', 0) / 0.30)
@@ -82,9 +84,6 @@ def calc_boom_score(row):
 
     return round(score * 100, 1)
 
-# ============================================================================
-# CTX LIFT
-# ============================================================================
 def calc_ctx_lift(row):
     """Context Lift: how much does tonight's matchup move the player off his norm?"""
     proj_tgt = row.get('proj_targets', 0)
@@ -97,20 +96,18 @@ def calc_ctx_lift(row):
     
     return round((this_week_prob - baseline_prob) * 100, 1)
 
-# ============================================================================
-# MAIN PROJECTION FUNCTION
-# ============================================================================
 def generate_nfl_projections(matchup_df, current_week):
     """Takes raw matchup_df and outputs projections."""
     df = matchup_df.copy()
     
-    # Step 1: Shrunk target share
+    # Shrunk target share (with loosened priors)
     df['shrunk_target_share'] = df.apply(
         lambda row: calculate_shrunk_rate(
             row.get('target_share', 0),
             row.get('targets', 0),
-            40 if current_week <= 10 else 20,
-            LEAGUE_AVG_TARGET_SHARE
+            current_week,
+            LEAGUE_AVG_TARGET_SHARE,
+            row.get('position', 'WR')
         ), axis=1
     )
     
@@ -122,7 +119,7 @@ def generate_nfl_projections(matchup_df, current_week):
         0
     )
     
-    # Step 2: Shrunk rates
+    # Shrunk rates
     df['shrunk_yds_per_tgt'] = df.apply(
         lambda row: shrink_yds_rate(
             row.get('yds_per_tgt', LEAGUE_AVG_YDS_PER_TGT),
@@ -137,8 +134,7 @@ def generate_nfl_projections(matchup_df, current_week):
         ), axis=1
     )
     
-    # Step 3: Base Projections
-    # FIX: Use team-specific pass volume instead of constant 35
+    # Base Projections
     df['team_avg_pass_attempts'] = df.get('team_avg_pass_attempts', LEAGUE_AVG_PASS_ATTEMPTS)
     if isinstance(df['team_avg_pass_attempts'], (int, float)):
         df['team_avg_pass_attempts'] = LEAGUE_AVG_PASS_ATTEMPTS
@@ -160,7 +156,7 @@ def generate_nfl_projections(matchup_df, current_week):
     
     df['proj_tds'] = df.apply(calc_proj_tds, axis=1).round(2)
     
-    # Step 4: Prop Probabilities
+    # Prop Probabilities
     df['prob_1plus_td'] = df['proj_tds'].apply(calc_td_probability)
     df['prob_over_45.5_yds'] = df.apply(
         lambda row: calc_yardage_probability(row['proj_rec_yards'], 45.5, row['proj_targets']),
@@ -170,10 +166,10 @@ def generate_nfl_projections(matchup_df, current_week):
         lambda row: 1 - poisson.cdf(3, row['proj_targets'] * 0.75), axis=1
     )
     
-    # Step 5: Boom Score
+    # Boom Score
     df['boom_score'] = df.apply(calc_boom_score, axis=1)
     
-    # Step 6: TD Spike
+    # TD Spike
     def calc_td_spike(row):
         if (row.get('prob_1plus_td', 0) >= 0.20 and
             row.get('target_share', 0) >= 0.20 and
@@ -182,7 +178,7 @@ def generate_nfl_projections(matchup_df, current_week):
         return False
     df['td_spike'] = df.apply(calc_td_spike, axis=1)
     
-    # Step 7: CTX LIFT
+    # CTX LIFT
     df['ctx_lift_pp'] = df.apply(calc_ctx_lift, axis=1)
     
     # Return columns
