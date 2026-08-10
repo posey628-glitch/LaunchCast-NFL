@@ -1,7 +1,10 @@
-# LaunchCast NFL dependencies
-streamlit>=1.37
-pandas>=2.1
-numpy>=1.24
-scipy>=1.11
-nfl_data_py>=0.3.2
-pyarrow>=14.0
+# LaunchCast NFL dependencies — PINNED (== not >=) to prevent Streamlit Cloud
+# from grabbing a broken newer version, the exact bug that crashed the MLB app
+# (unpinned streamlit + forced Python 3.14 → GZipResponder crash). Paired with
+# runtime.txt = python-3.11.
+streamlit==1.44.0
+pandas==2.2.3
+numpy==1.26.4
+scipy==1.13.1
+nfl_data_py==0.3.2
+pyarrow==17.0.0
