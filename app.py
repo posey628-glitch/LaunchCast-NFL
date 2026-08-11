@@ -91,6 +91,26 @@ else:
 ACTUAL_SEASON = resolve_season(REQUESTED_YEAR)
 
 st.sidebar.title("🏈 LaunchCast NFL")
+
+# Source health (owner-only) — early warning if nflverse ever fails, instead of
+# the app silently breaking. Lesson from the NBA data saga.
+if owner_mode:
+    with st.sidebar.expander("🔌 Data source health"):
+        try:
+            from data.sources_health import full_health
+            h = full_health()
+            p = h.get("primary", {})
+            if p.get("reachable"):
+                st.success(f"✅ Primary OK: {p.get('source')}")
+            elif p.get("installed"):
+                st.warning(f"⚠️ {p.get('source')} installed but not returning data")
+                if p.get("error"): st.caption(p["error"])
+            else:
+                st.error(f"❌ {p.get('source')} not available")
+                if p.get("error"): st.caption(p["error"])
+            st.caption(f"Backup key present: {h.get('backup_key_present')}")
+        except Exception as _e:
+            st.caption(f"health check error: {_e}")
 if ACTUAL_SEASON != REQUESTED_YEAR:
     st.sidebar.warning(f"⚠️ {REQUESTED_YEAR} unavailable — showing "
                        f"**{ACTUAL_SEASON}** data.")
